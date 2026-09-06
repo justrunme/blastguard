@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1120 640" role="img" aria-labelledby="title desc">
+  <title id="title">BlastGuard architecture</title>
+  <desc id="desc">Supply-chain digital twin from SBOM and runtime into explainable BLOCK WARN ALLOW decisions.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a1020"/>
+      <stop offset="100%" stop-color="#0d1528"/>
+    </linearGradient>
+    <linearGradient id="accentG" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%" stop-color="#fb7185"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7dd3fc"/>
+    </marker>
+    <style>
+      .title { font: 800 26px ui-sans-serif, system-ui, sans-serif; fill: #f1f5f9; }
+      .sub { font: 500 13px ui-sans-serif, system-ui, sans-serif; fill: #94a3b8; }
+      .chip { font: 700 10px ui-sans-serif, system-ui, sans-serif; fill: #0f172a; }
+      .h { font: 700 13px ui-sans-serif, system-ui, sans-serif; fill: #e2e8f0; }
+      .s { font: 500 11px ui-sans-serif, system-ui, sans-serif; fill: #94a3b8; }
+      .tiny { font: 600 10px ui-sans-serif, system-ui, sans-serif; fill: #64748b; letter-spacing: .04em; }
+      .box { fill: #0f1a2d; stroke: #3b536f; stroke-width: 1.5; }
+      .boxCore { fill: #15233a; stroke: #38bdf8; stroke-width: 1.8; }
+      .boxHot { fill: #1c1018; stroke: #fb7185; stroke-width: 1.8; }
+      .boxOk { fill: #052e1c; stroke: #34d399; stroke-width: 1.6; }
+      .flow { fill: none; stroke: #7dd3fc; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1120" height="640" fill="url(#bg)"/>
+  <text x="40" y="42" class="title">BlastGuard architecture</text>
+  <text x="40" y="66" class="sub">Build-time truth + runtime truth - decisions, not dashboards</text>
+  <rect x="40" y="80" width="280" height="22" rx="11" fill="url(#accentG)"/>
+  <text x="180" y="95" text-anchor="middle" class="chip">blast radius control plane</text>
+
+  <rect class="box" x="40" y="140" width="220" height="200" rx="14"/>
+  <text x="56" y="168" class="tiny">DISCOVER</text>
+  <text x="56" y="198" class="h">Syft / CycloneDX</text>
+  <text x="56" y="222" class="s">Grype / Trivy / OSV</text>
+  <text x="56" y="246" class="s">Cosign / provenance</text>
+  <text x="56" y="270" class="s">OpenVEX</text>
+
+  <path class="flow" d="M270 240 H320"/>
+
+  <rect class="boxCore" x="320" y="140" width="280" height="200" rx="14"/>
+  <text x="336" y="168" class="tiny">DIGITAL TWIN</text>
+  <text x="336" y="198" class="h">CVE - package - image</text>
+  <text x="336" y="222" class="h">workload - service - ingress</text>
+  <text x="336" y="256" class="s">+ runtime presence</text>
+  <text x="336" y="280" class="s">+ reachability / exposure</text>
+  <text x="336" y="304" class="s">+ criticality / VEX</text>
+
+  <path class="flow" d="M610 240 H660"/>
+
+  <rect class="boxHot" x="660" y="140" width="220" height="200" rx="14"/>
+  <text x="676" y="168" class="tiny">DECIDE</text>
+  <text x="676" y="198" class="h">Policy engine</text>
+  <text x="676" y="222" class="s">BLOCK / QUARANTINE</text>
+  <text x="676" y="246" class="s">WARN / ALLOW</text>
+  <text x="676" y="280" class="s">explainable reason</text>
+  <text x="676" y="304" class="s">no fake risk %</text>
+
+  <path class="flow" d="M890 240 H940"/>
+
+  <rect class="boxOk" x="940" y="140" width="140" height="200" rx="14"/>
+  <text x="956" y="168" class="tiny">ENFORCE</text>
+  <text x="956" y="206" class="h">Admission</text>
+  <text x="956" y="230" class="s">Sigstore PC</text>
+  <text x="956" y="254" class="s">Kyverno</text>
+  <text x="956" y="290" class="s">GitOps gate</text>
+
+  <rect class="box" x="40" y="380" width="1040" height="200" rx="16"/>
+  <text x="64" y="420" class="tiny">VERIFY</text>
+  <text x="64" y="456" class="h">Before: blast radius 3 / running 2 / exposed 1 / BLOCK</text>
+  <text x="64" y="488" class="h">After patch: blast radius 0 / running 0 / exposed 0</text>
+  <text x="64" y="528" class="h" style="fill:#86e6b9">REMEDIATION PROVED</text>
+  <text x="64" y="556" class="tiny">WHAT-IF: blastguard rehearse CVE-... / rehearse image ...</text>
+</svg>

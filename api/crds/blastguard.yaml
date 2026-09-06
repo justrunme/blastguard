@@ -1,0 +1,136 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: blastradii.blastguard.justrunme.com
+spec:
+  group: blastguard.justrunme.com
+  names:
+    kind: BlastRadius
+    listKind: BlastRadiusList
+    plural: blastradii
+    singular: blastradius
+    shortNames: ["br"]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                cve:
+                  type: string
+                twinRef:
+                  type: string
+            status:
+              type: object
+              properties:
+                affectedArtifacts:
+                  type: integer
+                runningWorkloads:
+                  type: integer
+                internetExposed:
+                  type: integer
+                reachable:
+                  type: integer
+                criticalPath:
+                  type: array
+                  items:
+                    type: string
+                decision:
+                  type: string
+                  enum: [ALLOW, WARN, QUARANTINE, BLOCK]
+                reason:
+                  type: string
+                remediationProved:
+                  type: boolean
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: securitydecisions.blastguard.justrunme.com
+spec:
+  group: blastguard.justrunme.com
+  names:
+    kind: SecurityDecision
+    listKind: SecurityDecisionList
+    plural: securitydecisions
+    singular: securitydecision
+    shortNames: ["sdec"]
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required: [cve, action]
+              properties:
+                cve:
+                  type: string
+                action:
+                  type: string
+                  enum: [ALLOW, WARN, QUARANTINE, BLOCK]
+                ruleId:
+                  type: string
+                reason:
+                  type: string
+                targetImage:
+                  type: string
+            status:
+              type: object
+              properties:
+                enforced:
+                  type: boolean
+                admission:
+                  type: string
+      subresources:
+        status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: supplychainpolicies.blastguard.justrunme.com
+spec:
+  group: blastguard.justrunme.com
+  names:
+    kind: SupplyChainPolicy
+    listKind: SupplyChainPolicyList
+    plural: supplychainpolicies
+    singular: supplychainpolicy
+    shortNames: ["scp"]
+  scope: Cluster
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                lifecycle:
+                  type: string
+                rules:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      action:
+                        type: string
+                      reasonTemplate:
+                        type: string

@@ -1,0 +1,6 @@
+.DS_Store
+/bin/
+/.evidence/
+*.log
+.idea/
+.vscode/

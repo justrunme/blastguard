@@ -1,0 +1,59 @@
+# BlastGuard decision policy — explainable clauses, never a fake risk percentage.
+version: 1
+name: supply-chain-blast-radius
+tagline: Don't count vulnerabilities. Predict their blast radius.
+lifecycle: Discover → Trace → Decide → Enforce → Verify
+
+# Ordered evaluation — first matching action wins.
+rules:
+  - id: critical-exposed-path
+    action: BLOCK
+    when:
+      severity_at_least: HIGH
+      running: true
+      internet_exposed: true
+      reachable_path: true
+      critical_service: true
+      vex_not_affected: false
+    reason_template: "exploitable CVE + running in production + internet exposed + critical service"
+
+  - id: high-running-fixable
+    action: QUARANTINE
+    when:
+      severity_at_least: HIGH
+      running: true
+      vex_not_affected: false
+      fix_available: true
+    reason_template: "HIGH CVE present on running workload with fix available"
+
+  - id: medium-reachable
+    action: WARN
+    when:
+      severity_at_least: MEDIUM
+      reachable_path: true
+      vex_not_affected: false
+    reason_template: "reachable dependency path without VEX not_affected"
+
+  - id: present-only
+    action: ALLOW
+    when:
+      vex_not_affected: true
+    reason_template: "VEX asserts not_affected for this artifact"
+
+  - id: default-warn
+    action: WARN
+    when: {}
+    reason_template: "CVE present in supply-chain graph; no elevated exposure signals"
+
+severity_rank:
+  CRITICAL: 4
+  HIGH: 3
+  MEDIUM: 2
+  LOW: 1
+  UNKNOWN: 0
+
+actions:
+  - BLOCK
+  - QUARANTINE
+  - WARN
+  - ALLOW
