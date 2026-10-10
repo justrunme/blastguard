@@ -136,7 +136,7 @@ jobs:
             --certificate-identity-regexp="^https://github.com/${{ github.repository }}/" \
             --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
             "${IMAGE}" >/dev/null 2>&1; then
-            cosign sign --yes "${IMAGE}"
+            cosign sign --yes --registry-referrers-mode=legacy "${IMAGE}"
           fi
           cosign verify \
             --certificate-identity-regexp="^https://github.com/${{ github.repository }}/" \
