@@ -10,6 +10,7 @@ Don't count vulnerabilities. Predict their blast radius.
 [![Release](https://img.shields.io/github/v/release/justrunme/blastguard?display_name=tag)](https://github.com/justrunme/blastguard/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/blastguard/)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/justrunme/blastguard/badge)](https://securityscorecards.dev/viewer/?uri=github.com/justrunme/blastguard)
 
 Case study: [BlastGuard](https://justrunme.com/cases/blastguard/) · [Andrey Lesnikov](https://justrunme.com/)
 
