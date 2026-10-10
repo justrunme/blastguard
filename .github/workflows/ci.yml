@@ -20,7 +20,7 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: Install golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.3.0
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin latest
       - name: golangci-lint
         run: $(go env GOPATH)/bin/golangci-lint run --timeout=5m
       - name: go test
