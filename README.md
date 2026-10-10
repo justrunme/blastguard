@@ -27,6 +27,18 @@ make rehearse
 make prove
 ```
 
+## Architecture
+
+```mermaid
+flowchart LR
+  Ingest[internal/ingest SBOM/vuln] --> Graph[internal/graph]
+  Cluster[internal/cluster runtime] --> Graph
+  Graph --> Decide[internal/decide]
+  Decide --> CLI[cmd/blastguard]
+  CLI --> Out[ALLOW / WARN / QUARANTINE / BLOCK]
+  CI[.github/workflows/ci.yml] --> Rel[release.yml]
+```
+
 ## Why this exists
 
 Ordinary pipeline:
