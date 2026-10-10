@@ -105,6 +105,15 @@ docker_manifests:
       - "ghcr.io/justrunme/blastguard:latest-amd64"
       - "ghcr.io/justrunme/blastguard:latest-arm64"
 
+docker_signs:
+  - cmd: cosign
+    artifacts: all
+    output: true
+    args:
+      - sign
+      - ${artifact}
+      - --yes
+
 release:
   github:
     owner: justrunme
