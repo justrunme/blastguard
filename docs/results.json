@@ -1,0 +1,13 @@
+{
+  "repo": "blastguard",
+  "source_run": "https://github.com/justrunme/blastguard/actions/runs/38066443627",
+  "measured_at": "2026-10-10T16:11:20Z",
+  "metrics": {
+    "demo_cve": "CVE-2026-1234",
+    "demo_decision": "BLOCK",
+    "remediation_proved": true,
+    "e2e_cve": "CVE-2026-93990",
+    "e2e_payment_api_decision": "BLOCK",
+    "e2e_internal_worker_decision": "WARN"
+  }
+}

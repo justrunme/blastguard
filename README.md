@@ -214,6 +214,30 @@ Assumptions → evidence.
 
 ---
 
-## License
+## Demo
+
+Terminal scan showing SBOM/provenance checks and a **BLOCK** policy decision for `CVE-2026-1234`, then before/after remediation prove:
+
+```bash
+make demo
+make prove
+```
+
+<p align="center">
+  <img src="docs/assets/demo-scan.svg" alt="Blastguard demo: CVE scan with BLOCK decision and REMEDIATION PROVED" width="100%" />
+</p>
+
+## Results
+
+Measured from CI (not estimates). Details: [docs/results.md](docs/results.md) · [docs/results.json](docs/results.json).
+
+| Scenario | Workload | Decision | Source run |
+| --- | --- | --- | --- |
+| Fixture demo `CVE-2026-1234` | payment path | **BLOCK** | [38066443627](https://github.com/justrunme/blastguard/actions/runs/38066443627) |
+| Kind e2e `CVE-2026-93990` | `payment-api` (exposed) | **BLOCK** | same run (`e2e-kind`) |
+| Kind e2e `CVE-2026-93990` | `internal-worker` | **WARN** | same run (`e2e-kind`) |
+| Remediation prove | after fix | **ALLOW** / REMEDIATION PROVED | same run (`ci`) |
+
+\n## License
 
 Apache-2.0 © Andrey Lesnikov
