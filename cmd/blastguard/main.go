@@ -1,14 +1,18 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/justrunme/blastguard/internal/cluster"
 	"github.com/justrunme/blastguard/internal/decide"
 	"github.com/justrunme/blastguard/internal/graph"
+	"github.com/justrunme/blastguard/internal/ingest"
 	"github.com/justrunme/blastguard/internal/render"
 )
 
@@ -22,6 +26,8 @@ func main() {
 	policyPath := filepath.Join(root, "config", "decision-policy.json")
 
 	switch os.Args[1] {
+	case "ingest":
+		runIngest(os.Args[2:])
 	case "demo":
 		cve := "CVE-2026-1234"
 		if len(os.Args) > 2 {
@@ -65,10 +71,25 @@ func usage() {
 Don't count vulnerabilities. Predict their blast radius.
 
 Usage:
+  blastguard ingest [options]
   blastguard demo [CVE-ID]
   blastguard rehearse CVE-2026-1234
   blastguard rehearse image ghcr.io/justrunme/payment-api:v2
   blastguard prove
+
+Commands:
+  ingest       Build graph from SBOM, vulnerability reports, and VEX
+               --sbom-cyclonedx <path>
+               --sbom-spdx <path>
+               --vulns-grype <path>
+               --vulns-osv <path>
+               --vex <path>
+               --from-cluster (scan live Kubernetes cluster)
+               --kubeconfig <path>
+               --output <path>
+               --policy <path>
+               --trace <CVE-ID> (evaluate after ingestion)
+               --workload <name> (scope --trace to one workload)
 
 Discover → Trace → Decide → Enforce → Verify
 `)
@@ -221,6 +242,89 @@ func writeEvidence(dir string, d decide.Decision) {
 	_ = os.MkdirAll(dir, 0o755)
 	b, _ := json.MarshalIndent(d, "", "  ")
 	_ = os.WriteFile(filepath.Join(dir, "decision-latest.json"), b, 0o644)
+}
+
+func runIngest(args []string) {
+	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
+	sbomCDX := fs.String("sbom-cyclonedx", "", "CycloneDX SBOM JSON file")
+	sbomSPDX := fs.String("sbom-spdx", "", "SPDX SBOM JSON file")
+	vulnsGrype := fs.String("vulns-grype", "", "Grype vulnerability JSON report")
+	vulnsOSV := fs.String("vulns-osv", "", "OSV-Scanner vulnerability JSON report")
+	vexFile := fs.String("vex", "", "OpenVEX document")
+	fromCluster := fs.Bool("from-cluster", false, "Scan live Kubernetes cluster")
+	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig")
+	output := fs.String("output", "", "Output twin JSON file")
+	policyPath := fs.String("policy", "", "Policy file for evaluation")
+	traceCVE := fs.String("trace", "", "CVE to trace after ingestion")
+	workload := fs.String("workload", "", "Scope --trace to a single workload name")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+
+	builder := ingest.NewBuilder()
+
+	if *sbomCDX != "" {
+		must(builder.IngestCycloneDX(*sbomCDX))
+		fmt.Fprintf(os.Stderr, "✓ Ingested CycloneDX SBOM from %s\n", *sbomCDX)
+	}
+
+	if *sbomSPDX != "" {
+		must(builder.IngestSPDX(*sbomSPDX))
+		fmt.Fprintf(os.Stderr, "✓ Ingested SPDX SBOM from %s\n", *sbomSPDX)
+	}
+
+	if *vulnsGrype != "" {
+		must(builder.IngestGrype(*vulnsGrype))
+		fmt.Fprintf(os.Stderr, "✓ Ingested Grype vulnerabilities from %s\n", *vulnsGrype)
+	}
+
+	if *vulnsOSV != "" {
+		must(builder.IngestOSV(*vulnsOSV))
+		fmt.Fprintf(os.Stderr, "✓ Ingested OSV-Scanner vulnerabilities from %s\n", *vulnsOSV)
+	}
+
+	if *vexFile != "" {
+		must(builder.IngestVEX(*vexFile))
+		fmt.Fprintf(os.Stderr, "✓ Ingested VEX statements from %s\n", *vexFile)
+	}
+
+	twin := builder.Build()
+
+	if *fromCluster {
+		scanner, err := cluster.NewScanner(*kubeconfig)
+		must(err)
+		workloads, err := scanner.ScanCluster(context.Background())
+		must(err)
+		twin.BindWorkloads(workloads)
+		fmt.Fprintf(os.Stderr, "✓ Scanned cluster: %d workloads\n", len(workloads))
+	}
+
+	if *output != "" {
+		b, err := json.MarshalIndent(twin, "", "  ")
+		must(err)
+		must(os.WriteFile(*output, b, 0o644))
+		fmt.Fprintf(os.Stderr, "✓ Wrote twin to %s\n", *output)
+	} else {
+		b, err := json.MarshalIndent(twin, "", "  ")
+		must(err)
+		fmt.Println(string(b))
+	}
+
+	if *traceCVE != "" && *policyPath != "" {
+		p, err := decide.LoadPolicy(*policyPath)
+		must(err)
+		s, err := decide.TraceCVEWorkload(twin, *traceCVE, *workload)
+		must(err)
+		d := p.Evaluate(s)
+		fmt.Fprintln(os.Stderr, "\n── Decision ──")
+		if *workload != "" {
+			fmt.Fprintf(os.Stderr, "workload=%s\n", *workload)
+		}
+		fmt.Fprint(os.Stderr, render.Card(d))
+		fmt.Fprintf(os.Stderr, "DECISION %s workload=%s cve=%s\n", d.Action, *workload, *traceCVE)
+	}
 }
 
 func must(err error) {

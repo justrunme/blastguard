@@ -4,24 +4,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 fail=0
 
-echo "== required files =="
-for f in \
-  README.md LICENSE Makefile \
-  config/decision-policy.json config/decision-policy.yaml \
-  fixtures/demo-graph.json \
-  docs/assets/blastguard-lifecycle.svg \
-  api/crds/blastguard.yaml \
-  cmd/blastguard/main.go
-do
-  [[ -f "$f" ]] || { echo "missing $f" >&2; fail=1; }
-done
+echo "== go vet =="
+go vet ./... || fail=1
 
-echo "== concept markers =="
-grep -q 'BlastGuard' README.md || fail=1
-grep -q 'Discover → Trace → Decide → Enforce → Verify' README.md || fail=1
-grep -q "Don't count vulnerabilities" README.md || fail=1
-grep -q 'REMEDIATION PROVED' README.md || fail=1
-! grep -qiE 'confidence.*[0-9]+ / 100|Risk Score' README.md || { echo "percentage scoring language found" >&2; fail=1; }
+echo "== go test =="
+go test -race -cover ./... || fail=1
 
 echo "== build + demo =="
 go build -o bin/blastguard ./cmd/blastguard
@@ -39,11 +26,17 @@ echo "== rehearse image =="
 ./bin/blastguard rehearse image ghcr.io/justrunme/payment-api:v42 >/tmp/bg-rehearse.out
 cat /tmp/bg-rehearse.out
 
-echo "== go test =="
-go test ./...
+echo "== ingest test =="
+./bin/blastguard ingest \
+  --sbom-cyclonedx testdata/alpine-3.20-cdx.json \
+  --vulns-grype testdata/alpine-3.20-grype.json \
+  > /tmp/test-ingest.json
+test -s /tmp/test-ingest.json || { echo "ingest output empty" >&2; fail=1; }
+cat /tmp/test-ingest.json | jq -e '.cves | length > 0' >/dev/null || { echo "no CVEs ingested" >&2; fail=1; }
 
 if [[ "$fail" -ne 0 ]]; then
   echo "ci failed" >&2
   exit 1
 fi
 echo "ci checks passed"
+

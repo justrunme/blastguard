@@ -12,6 +12,118 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-      - name: CI checks
-        run: make ci
+          go-version-file: go.mod
+      - name: Install Syft
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b ./bin
+      - name: Install Grype
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b ./bin
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          install-mode: goinstall
+      - name: go test
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Build
+        run: go build -o bin/blastguard ./cmd/blastguard
+      - name: Demo test
+        run: |
+          ./bin/blastguard demo CVE-2026-1234 | grep -q 'BLOCK'
+      - name: Prove remediation
+        run: |
+          ./bin/blastguard prove | grep -q 'REMEDIATION PROVED'
+      - name: Test ingest
+        run: |
+          ./bin/syft alpine:3.20 -o cyclonedx-json > /tmp/alpine-cdx.json 2>/dev/null
+          ./bin/grype alpine:3.20 -o json 2>/dev/null > /tmp/alpine-grype.json
+          ./bin/blastguard ingest --sbom-cyclonedx /tmp/alpine-cdx.json --vulns-grype /tmp/alpine-grype.json > /tmp/twin.json
+          test -s /tmp/twin.json
+  
+  e2e-kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Install Syft and Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b ./bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b ./bin
+      - name: Create kind cluster
+        run: kind create cluster --name blastguard-test
+      - name: Build
+        run: go build -o bin/blastguard ./cmd/blastguard
+      - name: Deploy test workloads
+        run: |
+          kubectl create deployment payment-api --image=nginx:alpine --replicas=2
+          kubectl label deployment payment-api blastguard.io/critical=true
+          kubectl expose deployment payment-api --port=80 --type=LoadBalancer
+          kubectl create deployment internal-worker --image=nginx:alpine --replicas=1
+          kubectl wait --for=condition=available --timeout=60s deployment/payment-api
+          kubectl wait --for=condition=available --timeout=60s deployment/internal-worker
+      - name: Generate SBOM and scan for vulnerabilities
+        run: |
+          ./bin/syft nginx:alpine -o cyclonedx-json > /tmp/nginx-sbom.json 2>/dev/null
+          ./bin/grype nginx:alpine -o json 2>/dev/null > /tmp/nginx-vulns.json
+      - name: Scan cluster and build twin
+        run: |
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --output /tmp/cluster-twin.json
+          cat /tmp/cluster-twin.json
+          test $(jq '.workloads | length' /tmp/cluster-twin.json) -ge 2
+      - name: Test exposure decisions
+        run: |
+          set -euo pipefail
+          CVE=$(jq -r '[.cves[] | select((.severity|ascii_upcase)=="HIGH" or (.severity|ascii_upcase)=="CRITICAL")] | .[0].id' /tmp/cluster-twin.json)
+          if [ -z "$CVE" ] || [ "$CVE" = "null" ]; then
+            echo "No HIGH/CRITICAL CVE in nginx:alpine twin, cannot test decisions"
+            jq '.cves' /tmp/cluster-twin.json
+            exit 1
+          fi
+          echo "Testing decisions for $CVE on exposed vs internal workloads"
+
+          PAYMENT_EXPOSED=$(jq -r '.workloads[] | select(.name == "payment-api") | .internet_exposed' /tmp/cluster-twin.json)
+          WORKER_EXPOSED=$(jq -r '.workloads[] | select(.name == "internal-worker") | .internet_exposed' /tmp/cluster-twin.json)
+          echo "payment-api exposed: $PAYMENT_EXPOSED"
+          echo "internal-worker exposed: $WORKER_EXPOSED"
+          test "$PAYMENT_EXPOSED" = "true" || { echo "ERROR: payment-api should be exposed"; exit 1; }
+          test "$WORKER_EXPOSED" = "false" || { echo "ERROR: internal-worker should not be exposed"; exit 1; }
+
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --policy config/decision-policy.json \
+            --output /tmp/payment-twin.json \
+            --trace "$CVE" \
+            --workload payment-api \
+            2>&1 | tee /tmp/payment-decision.out
+          PAYMENT_DECISION=$(grep -E '^DECISION ' /tmp/payment-decision.out | awk '{print $2}')
+          echo "payment-api decision: $PAYMENT_DECISION"
+          test "$PAYMENT_DECISION" = "BLOCK" || { echo "ERROR: expected BLOCK for payment-api, got ${PAYMENT_DECISION:-empty}"; cat /tmp/payment-decision.out; exit 1; }
+
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --policy config/decision-policy.json \
+            --output /tmp/worker-twin.json \
+            --trace "$CVE" \
+            --workload internal-worker \
+            2>&1 | tee /tmp/worker-decision.out
+          WORKER_DECISION=$(grep -E '^DECISION ' /tmp/worker-decision.out | awk '{print $2}')
+          echo "internal-worker decision: $WORKER_DECISION"
+          test "$WORKER_DECISION" = "WARN" || { echo "ERROR: expected WARN for internal-worker, got ${WORKER_DECISION:-empty}"; cat /tmp/worker-decision.out; exit 1; }
+
+          echo "✓ same CVE $CVE → BLOCK on payment-api, WARN on internal-worker"
