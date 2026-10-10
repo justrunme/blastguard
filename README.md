@@ -2,9 +2,14 @@
 
 Don't count vulnerabilities. Predict their blast radius.
 
+<p align="center">
+  <img src="docs/assets/blastguard-lifecycle.svg" alt="Discover Trace Decide Enforce Verify" width="100%" />
+</p>
+
 [![CI](https://github.com/justrunme/blastguard/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/blastguard/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/justrunme/blastguard?display_name=tag)](https://github.com/justrunme/blastguard/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
+[![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/blastguard/)
 
 Case study: [BlastGuard](https://justrunme.com/cases/blastguard/) · [Andrey Lesnikov](https://justrunme.com/)
 
