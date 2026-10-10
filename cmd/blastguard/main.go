@@ -258,7 +258,10 @@ func runIngest(args []string) {
 	traceCVE := fs.String("trace", "", "CVE to trace after ingestion")
 	workload := fs.String("workload", "", "Scope --trace to a single workload name")
 
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 
 	builder := ingest.NewBuilder()
 

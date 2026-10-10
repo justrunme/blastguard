@@ -220,7 +220,7 @@ func (b *Builder) IngestOSV(path string) error {
 				severity := "UNKNOWN"
 				for _, sev := range vuln.Severity {
 					if sev.Type == "CVSS_V3" {
-						fmt.Sscanf(sev.Score, "CVSS:3.%*d/%*s/%f", &cvss)
+						_, _ = fmt.Sscanf(sev.Score, "CVSS:3.%*d/%*s/%f", &cvss)
 						if cvss >= 9.0 {
 							severity = "CRITICAL"
 						} else if cvss >= 7.0 {
