@@ -85,13 +85,60 @@ No fake `Risk 83/100`. Decisions are **ALLOW / WARN / QUARANTINE / BLOCK** with 
 
 ## Quickstart
 
+### 1. Scan an image and ingest results
+
+```bash
+syft alpine:3.20 -o cyclonedx-json > alpine-sbom.json
+grype alpine:3.20 -o json > alpine-vulns.json
+
+blastguard ingest \
+  --sbom-cyclonedx alpine-sbom.json \
+  --vulns-grype alpine-vulns.json \
+  --output alpine-twin.json
+```
+
+### 2. Scan live Kubernetes cluster
+
+```bash
+blastguard ingest --from-cluster --output cluster-twin.json
+```
+
+### 3. Trace CVE blast radius
+
+```bash
+blastguard ingest \
+  --sbom-cyclonedx alpine-sbom.json \
+  --vulns-grype alpine-vulns.json \
+  --policy config/decision-policy.json \
+  --trace CVE-2026-85091
+```
+
+Output:
+
+```text
+┌──────────────────────────────────────────────┐
+│  BLASTGUARD                                  │
+│  CVE-2026-85091                              │
+├──────────────────────────────────────────────┤
+│  Package          zlib                       │
+│  Severity         HIGH                       │
+│  CVSS             8.3                        │
+│  EPSS             0.00356                    │
+│  Running          yes                        │
+│  Internet exposed yes                        │
+│  POLICY           ● BLOCK                    │
+│  Reason           exploitable CVE on         │
+│                   internet-exposed service   │
+└──────────────────────────────────────────────┘
+```
+
+### 4. What-if Security Rehearsal
+
 ```bash
 make demo      # trace CVE-2026-1234 → BLOCK on critical path
 make rehearse  # what-if for a CVE
 make prove     # before/after remediation evidence
 ```
-
-### What-if Security Rehearsal
 
 ```bash
 ./bin/blastguard rehearse CVE-2026-1234

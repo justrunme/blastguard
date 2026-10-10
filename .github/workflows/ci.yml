@@ -12,6 +12,60 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
-      - name: CI checks
-        run: make ci
+          go-version-file: go.mod
+      - name: go vet
+        run: go vet ./...
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(go env GOPATH)/bin v2.3.0
+      - name: golangci-lint
+        run: $(go env GOPATH)/bin/golangci-lint run --timeout=5m
+      - name: go test
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+      - name: Build
+        run: go build -o bin/blastguard ./cmd/blastguard
+      - name: Demo test
+        run: |
+          ./bin/blastguard demo CVE-2026-1234 | grep -q 'BLOCK'
+      - name: Prove remediation
+        run: |
+          ./bin/blastguard prove | grep -q 'REMEDIATION PROVED'
+      - name: Test ingest
+        run: |
+          ./bin/syft alpine:3.20 -o cyclonedx-json > /tmp/alpine-cdx.json 2>/dev/null
+          ./bin/grype alpine:3.20 -o json 2>/dev/null > /tmp/alpine-grype.json
+          ./bin/blastguard ingest --sbom-cyclonedx /tmp/alpine-cdx.json --vulns-grype /tmp/alpine-grype.json > /tmp/twin.json
+          test -s /tmp/twin.json
+  
+  e2e-kind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+      - name: Create kind cluster
+        run: kind create cluster --name blastguard-test
+      - name: Build
+        run: go build -o bin/blastguard ./cmd/blastguard
+      - name: Deploy test workloads
+        run: |
+          kubectl create deployment payment-api --image=nginx:alpine --replicas=2
+          kubectl label deployment payment-api blastguard.io/critical=true
+          kubectl expose deployment payment-api --port=80 --type=LoadBalancer
+          kubectl create deployment internal-worker --image=nginx:alpine --replicas=1
+          kubectl wait --for=condition=available --timeout=60s deployment/payment-api
+          kubectl wait --for=condition=available --timeout=60s deployment/internal-worker
+      - name: Scan cluster
+        run: |
+          ./bin/blastguard ingest --from-cluster --output cluster-twin.json
+          cat cluster-twin.json
+          test $(jq '.workloads | length' cluster-twin.json) -ge 2
+      - name: Test exposure logic
+        run: |
+          jq '.workloads[] | select(.name == "payment-api") | .internet_exposed' cluster-twin.json | grep -q true
+          jq '.workloads[] | select(.name == "internal-worker") | .internet_exposed' cluster-twin.json | grep -q false

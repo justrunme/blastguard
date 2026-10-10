@@ -1,0 +1,9 @@
+Failed to parse SBOM using all supported formats:
+failed to parse SPDX:
+	failed trying json: JSON document does not contain spdxVersion field
+	failed trying rdf: found extra chars before tag start
+	failed trying tv: unsupported SPDX version: ''
+failed to parse CycloneDX:
+	failed trying json: invalid specification version
+	failed trying xml: XML syntax error on line 1: invalid character entity &distro (no semicolon)
+No package sources found, --help for usage information.

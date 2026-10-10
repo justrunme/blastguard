@@ -1,0 +1,21 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://example.com/vex/alpine-3.20",
+  "author": "blastguard-test",
+  "timestamp": "2026-10-10T11:00:00Z",
+  "version": "1",
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2024-6119"
+      },
+      "products": [
+        {
+          "@id": "pkg:oci/alpine@sha256:0a4eaa0eecf5f8c050e5bba433f58c052be7587ee8af3e8b3910ef9ab5fbe9f5"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_in_execute_path"
+    }
+  ]
+}
