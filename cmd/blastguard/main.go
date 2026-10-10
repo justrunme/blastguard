@@ -89,6 +89,7 @@ Commands:
                --output <path>
                --policy <path>
                --trace <CVE-ID> (evaluate after ingestion)
+               --workload <name> (scope --trace to one workload)
 
 Discover → Trace → Decide → Enforce → Verify
 `)
@@ -255,47 +256,48 @@ func runIngest(args []string) {
 	output := fs.String("output", "", "Output twin JSON file")
 	policyPath := fs.String("policy", "", "Policy file for evaluation")
 	traceCVE := fs.String("trace", "", "CVE to trace after ingestion")
-	
+	workload := fs.String("workload", "", "Scope --trace to a single workload name")
+
 	fs.Parse(args)
-	
+
 	builder := ingest.NewBuilder()
-	
+
 	if *sbomCDX != "" {
 		must(builder.IngestCycloneDX(*sbomCDX))
 		fmt.Fprintf(os.Stderr, "✓ Ingested CycloneDX SBOM from %s\n", *sbomCDX)
 	}
-	
+
 	if *sbomSPDX != "" {
 		must(builder.IngestSPDX(*sbomSPDX))
 		fmt.Fprintf(os.Stderr, "✓ Ingested SPDX SBOM from %s\n", *sbomSPDX)
 	}
-	
+
 	if *vulnsGrype != "" {
 		must(builder.IngestGrype(*vulnsGrype))
 		fmt.Fprintf(os.Stderr, "✓ Ingested Grype vulnerabilities from %s\n", *vulnsGrype)
 	}
-	
+
 	if *vulnsOSV != "" {
 		must(builder.IngestOSV(*vulnsOSV))
 		fmt.Fprintf(os.Stderr, "✓ Ingested OSV-Scanner vulnerabilities from %s\n", *vulnsOSV)
 	}
-	
+
 	if *vexFile != "" {
 		must(builder.IngestVEX(*vexFile))
 		fmt.Fprintf(os.Stderr, "✓ Ingested VEX statements from %s\n", *vexFile)
 	}
-	
+
 	twin := builder.Build()
-	
+
 	if *fromCluster {
 		scanner, err := cluster.NewScanner(*kubeconfig)
 		must(err)
 		workloads, err := scanner.ScanCluster(context.Background())
 		must(err)
-		twin.Workloads = workloads
+		twin.BindWorkloads(workloads)
 		fmt.Fprintf(os.Stderr, "✓ Scanned cluster: %d workloads\n", len(workloads))
 	}
-	
+
 	if *output != "" {
 		b, err := json.MarshalIndent(twin, "", "  ")
 		must(err)
@@ -306,15 +308,19 @@ func runIngest(args []string) {
 		must(err)
 		fmt.Println(string(b))
 	}
-	
+
 	if *traceCVE != "" && *policyPath != "" {
 		p, err := decide.LoadPolicy(*policyPath)
 		must(err)
-		s, err := decide.TraceCVE(twin, *traceCVE)
+		s, err := decide.TraceCVEWorkload(twin, *traceCVE, *workload)
 		must(err)
 		d := p.Evaluate(s)
 		fmt.Fprintln(os.Stderr, "\n── Decision ──")
+		if *workload != "" {
+			fmt.Fprintf(os.Stderr, "workload=%s\n", *workload)
+		}
 		fmt.Fprint(os.Stderr, render.Card(d))
+		fmt.Fprintf(os.Stderr, "DECISION %s workload=%s cve=%s\n", d.Action, *workload, *traceCVE)
 	}
 }
 

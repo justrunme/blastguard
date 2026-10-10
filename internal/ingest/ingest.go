@@ -28,10 +28,10 @@ type CycloneDX struct {
 }
 
 type SPDXPackage struct {
-	SPDXID           string   `json:"SPDXID"`
-	Name             string   `json:"name"`
-	VersionInfo      string   `json:"versionInfo"`
-	ExternalRefs     []struct {
+	SPDXID       string `json:"SPDXID"`
+	Name         string `json:"name"`
+	VersionInfo  string `json:"versionInfo"`
+	ExternalRefs []struct {
 		ReferenceCategory string `json:"referenceCategory"`
 		ReferenceType     string `json:"referenceType"`
 		ReferenceLocator  string `json:"referenceLocator"`
@@ -46,8 +46,8 @@ type SPDX struct {
 
 type GrypeMatch struct {
 	Vulnerability struct {
-		ID       string   `json:"id"`
-		Severity string   `json:"severity"`
+		ID       string `json:"id"`
+		Severity string `json:"severity"`
 		Cvss     []struct {
 			Metrics struct {
 				BaseScore float64 `json:"baseScore"`
@@ -110,10 +110,10 @@ type VEX struct {
 }
 
 type Builder struct {
-	packages     map[string]graph.Pkg
-	cves         map[string]*graph.CVE
+	packages      map[string]graph.Pkg
+	cves          map[string]*graph.CVE
 	vexStatements []graph.VEX
-	imageRef     string
+	imageRef      string
 }
 
 func NewBuilder() *Builder {
@@ -133,14 +133,15 @@ func (b *Builder) IngestCycloneDX(path string) error {
 		return err
 	}
 	if cdx.Metadata != nil && cdx.Metadata.Component != nil {
-		b.imageRef = cdx.Metadata.Component.Name
+		b.imageRef = imageRefFromComponent(cdx.Metadata.Component.Name, cdx.Metadata.Component.Version)
 	}
 	for _, comp := range cdx.Components {
-		if comp.Type == "library" || comp.Type == "application" {
-			b.packages[comp.Name] = graph.Pkg{
-				Name:    comp.Name,
-				Version: comp.Version,
-			}
+		if comp.Name == "" || comp.Type == "file" || comp.Type == "operating-system" {
+			continue
+		}
+		b.packages[comp.Name] = graph.Pkg{
+			Name:    comp.Name,
+			Version: comp.Version,
 		}
 	}
 	return nil
@@ -189,7 +190,7 @@ func (b *Builder) IngestGrype(path string) error {
 				ID:           vuln.ID,
 				Package:      match.Artifact.Name,
 				VersionRange: "< " + strings.Join(vuln.FixVersions, ", "),
-				Severity:     vuln.Severity,
+				Severity:     normalizeSeverity(vuln.Severity),
 				CVSS:         cvss,
 				EPSS:         0.0,
 				FixAvailable: len(vuln.FixVersions) > 0,
@@ -274,17 +275,17 @@ func (b *Builder) Build() *graph.Twin {
 	for _, pkg := range b.packages {
 		packages = append(packages, pkg)
 	}
-	
+
 	var cves []graph.CVE
 	for _, cve := range b.cves {
 		cves = append(cves, *cve)
 	}
-	
+
 	imageRef := b.imageRef
 	if imageRef == "" {
 		imageRef = "ingested-image"
 	}
-	
+
 	return &graph.Twin{
 		CVEs: cves,
 		Artifacts: []graph.Artifact{
@@ -298,5 +299,32 @@ func (b *Builder) Build() *graph.Twin {
 		},
 		Workloads: []graph.Workload{},
 		VEX:       b.vexStatements,
+	}
+}
+
+func imageRefFromComponent(name, version string) string {
+	name = strings.TrimSpace(name)
+	version = strings.TrimSpace(version)
+	if name == "" {
+		return ""
+	}
+	if version != "" && !strings.Contains(name, ":") {
+		return name + ":" + version
+	}
+	return name
+}
+
+func normalizeSeverity(s string) string {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	switch s {
+	case "CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN":
+		return s
+	case "NEGLIGIBLE", "INFO":
+		return "LOW"
+	default:
+		if s == "" {
+			return "UNKNOWN"
+		}
+		return s
 	}
 }

@@ -4,25 +4,16 @@ run:
   timeout: 5m
 
 linters:
+  default: standard
   enable:
-    - errcheck
-    - gosimple
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
     - misspell
     - unconvert
+  settings:
+    govet:
+      enable-all: true
+      disable:
+        - shadow
+
+formatters:
+  enable:
     - gofmt
-
-linters-settings:
-  errcheck:
-    check-blank: false
-  govet:
-    enable-all: true
-    disable:
-      - shadow
-
-issues:
-  max-issues-per-linter: 0
-  max-same-issues: 0

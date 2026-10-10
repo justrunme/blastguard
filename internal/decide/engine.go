@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/justrunme/blastguard/internal/graph"
 )
@@ -19,20 +20,20 @@ type When struct {
 }
 
 type Rule struct {
-	ID              string `json:"id"`
-	Action          string `json:"action"`
-	When            When   `json:"when"`
-	ReasonTemplate  string `json:"reason_template"`
+	ID             string `json:"id"`
+	Action         string `json:"action"`
+	When           When   `json:"when"`
+	ReasonTemplate string `json:"reason_template"`
 }
 
 type Policy struct {
-	Version       int               `json:"version"`
-	Name          string            `json:"name"`
-	Tagline       string            `json:"tagline"`
-	Lifecycle     string            `json:"lifecycle"`
-	Rules         []Rule            `json:"rules"`
-	SeverityRank  map[string]int    `json:"severity_rank"`
-	Actions       []string          `json:"actions"`
+	Version      int            `json:"version"`
+	Name         string         `json:"name"`
+	Tagline      string         `json:"tagline"`
+	Lifecycle    string         `json:"lifecycle"`
+	Rules        []Rule         `json:"rules"`
+	SeverityRank map[string]int `json:"severity_rank"`
+	Actions      []string       `json:"actions"`
 }
 
 type Signals struct {
@@ -58,9 +59,9 @@ type Signals struct {
 }
 
 type Decision struct {
-	Action string   `json:"action"`
-	RuleID string   `json:"rule_id"`
-	Reason string   `json:"reason"`
+	Action  string  `json:"action"`
+	RuleID  string  `json:"rule_id"`
+	Reason  string  `json:"reason"`
 	Signals Signals `json:"signals"`
 }
 
@@ -80,7 +81,7 @@ func (p *Policy) rank(sev string) int {
 	if p.SeverityRank == nil {
 		return 0
 	}
-	return p.SeverityRank[sev]
+	return p.SeverityRank[strings.ToUpper(strings.TrimSpace(sev))]
 }
 
 func matchBool(want *bool, have bool) bool {
@@ -130,6 +131,11 @@ func (p *Policy) Evaluate(s Signals) Decision {
 
 // TraceCVE builds blast-radius signals for one CVE against the digital twin.
 func TraceCVE(t *graph.Twin, cveID string) (Signals, error) {
+	return TraceCVEWorkload(t, cveID, "")
+}
+
+// TraceCVEWorkload builds signals for one CVE, optionally scoped to a single workload name.
+func TraceCVEWorkload(t *graph.Twin, cveID, workload string) (Signals, error) {
 	cve := t.CVE(cveID)
 	if cve == nil {
 		return Signals{}, fmt.Errorf("unknown CVE %s", cveID)
@@ -137,7 +143,7 @@ func TraceCVE(t *graph.Twin, cveID string) (Signals, error) {
 	s := Signals{
 		CVE:          cve.ID,
 		Package:      cve.Package,
-		Severity:     cve.Severity,
+		Severity:     strings.ToUpper(strings.TrimSpace(cve.Severity)),
 		CVSS:         cve.CVSS,
 		EPSS:         cve.EPSS,
 		FixAvailable: cve.FixAvailable,
@@ -155,7 +161,10 @@ func TraceCVE(t *graph.Twin, cveID string) (Signals, error) {
 		}
 		s.AffectedArts++
 		for _, w := range t.Workloads {
-			if w.Image != a.Image {
+			if workload != "" && w.Name != workload {
+				continue
+			}
+			if !graph.ImagesMatch(w.Image, a.Image) {
 				continue
 			}
 			if w.Running {

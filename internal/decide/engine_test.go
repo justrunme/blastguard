@@ -31,6 +31,44 @@ func TestCriticalPathBlocks(t *testing.T) {
 	}
 }
 
+func TestSameCVEBlockVsWarnByWorkload(t *testing.T) {
+	pol, err := decide.LoadPolicy(filepath.Join("..", "..", "config", "decision-policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	twin := &graph.Twin{
+		CVEs: []graph.CVE{{
+			ID: "CVE-2026-85091", Package: "zlib", Severity: "High",
+			CVSS: 8.3, FixAvailable: false,
+		}},
+		Artifacts: []graph.Artifact{{
+			Image:    "nginx",
+			Packages: []graph.Pkg{{Name: "zlib", Version: "1.3.2-r0"}},
+		}},
+		Workloads: []graph.Workload{
+			{Name: "payment-api", Namespace: "default", Image: "nginx:alpine", Replicas: 2, Critical: true, InternetExposed: true, ReachablePath: true, Running: true},
+			{Name: "internal-worker", Namespace: "default", Image: "nginx:alpine", Replicas: 1, Critical: false, InternetExposed: false, ReachablePath: false, Running: true},
+		},
+	}
+	twin.BindWorkloads(twin.Workloads)
+
+	exposed, err := decide.TraceCVEWorkload(twin, "CVE-2026-85091", "payment-api")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pol.Evaluate(exposed); got.Action != "BLOCK" {
+		t.Fatalf("payment-api: want BLOCK, got %s (%s) signals=%+v", got.Action, got.Reason, exposed)
+	}
+
+	internal, err := decide.TraceCVEWorkload(twin, "CVE-2026-85091", "internal-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pol.Evaluate(internal); got.Action != "WARN" {
+		t.Fatalf("internal-worker: want WARN, got %s (%s) signals=%+v", got.Action, got.Reason, internal)
+	}
+}
+
 func TestVEXAllows(t *testing.T) {
 	root := filepath.Join("..", "..")
 	twin, err := graph.Load(filepath.Join(root, "fixtures", "demo-graph.json"))

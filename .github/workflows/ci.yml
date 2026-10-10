@@ -20,7 +20,7 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           install-mode: goinstall
@@ -84,63 +84,46 @@ jobs:
           test $(jq '.workloads | length' /tmp/cluster-twin.json) -ge 2
       - name: Test exposure decisions
         run: |
-          CVE=$(jq -r '.cves[0].id' /tmp/nginx-sbom.json /tmp/nginx-vulns.json /tmp/cluster-twin.json 2>/dev/null | grep '^CVE-' | head -1)
+          set -euo pipefail
+          CVE=$(jq -r '[.cves[] | select((.severity|ascii_upcase)=="HIGH" or (.severity|ascii_upcase)=="CRITICAL")] | .[0].id' /tmp/cluster-twin.json)
           if [ -z "$CVE" ] || [ "$CVE" = "null" ]; then
-            echo "No CVEs found in nginx:alpine, cannot test decisions"
+            echo "No HIGH/CRITICAL CVE in nginx:alpine twin, cannot test decisions"
+            jq '.cves' /tmp/cluster-twin.json
             exit 1
           fi
-          
           echo "Testing decisions for $CVE on exposed vs internal workloads"
-          
-          ./bin/blastguard ingest \
-            --sbom-cyclonedx /tmp/nginx-sbom.json \
-            --vulns-grype /tmp/nginx-vulns.json \
-            --from-cluster \
-            --policy config/decision-policy.json \
-            --output /tmp/decision-twin.json 2>&1 | tee /tmp/decision.log
-          
-          PAYMENT_EXPOSED=$(jq -r '.workloads[] | select(.name == "payment-api") | .internet_exposed' /tmp/decision-twin.json)
-          WORKER_EXPOSED=$(jq -r '.workloads[] | select(.name == "internal-worker") | .internet_exposed' /tmp/decision-twin.json)
-          
+
+          PAYMENT_EXPOSED=$(jq -r '.workloads[] | select(.name == "payment-api") | .internet_exposed' /tmp/cluster-twin.json)
+          WORKER_EXPOSED=$(jq -r '.workloads[] | select(.name == "internal-worker") | .internet_exposed' /tmp/cluster-twin.json)
           echo "payment-api exposed: $PAYMENT_EXPOSED"
           echo "internal-worker exposed: $WORKER_EXPOSED"
-          
           test "$PAYMENT_EXPOSED" = "true" || { echo "ERROR: payment-api should be exposed"; exit 1; }
           test "$WORKER_EXPOSED" = "false" || { echo "ERROR: internal-worker should not be exposed"; exit 1; }
-          
-          echo "Testing decision for $CVE on payment-api (exposed)"
+
           ./bin/blastguard ingest \
             --sbom-cyclonedx /tmp/nginx-sbom.json \
             --vulns-grype /tmp/nginx-vulns.json \
             --from-cluster \
             --policy config/decision-policy.json \
-            --trace "$CVE" 2>&1 | tee /tmp/payment-decision.out
-          
-          if ! grep -q "BLOCK\|QUARANTINE" /tmp/payment-decision.out; then
-            echo "ERROR: Expected BLOCK or QUARANTINE for exposed payment-api with $CVE"
-            cat /tmp/payment-decision.out
-            exit 1
-          fi
-          
-          echo "✓ payment-api (exposed) correctly triggers BLOCK/QUARANTINE for $CVE"
-          
-          echo "Creating test scenario with only internal-worker"
-          kubectl delete deployment payment-api || true
-          kubectl delete service payment-api || true
-          sleep 5
-          
+            --output /tmp/payment-twin.json \
+            --trace "$CVE" \
+            --workload payment-api \
+            2>&1 | tee /tmp/payment-decision.out
+          PAYMENT_DECISION=$(grep -E '^DECISION ' /tmp/payment-decision.out | awk '{print $2}')
+          echo "payment-api decision: $PAYMENT_DECISION"
+          test "$PAYMENT_DECISION" = "BLOCK" || { echo "ERROR: expected BLOCK for payment-api, got ${PAYMENT_DECISION:-empty}"; cat /tmp/payment-decision.out; exit 1; }
+
           ./bin/blastguard ingest \
             --sbom-cyclonedx /tmp/nginx-sbom.json \
             --vulns-grype /tmp/nginx-vulns.json \
             --from-cluster \
             --policy config/decision-policy.json \
-            --trace "$CVE" 2>&1 | tee /tmp/worker-decision.out
-          
-          if grep -q "BLOCK" /tmp/worker-decision.out && ! grep -q "WARN\|ALLOW" /tmp/worker-decision.out; then
-            echo "ERROR: Internal-only workload should not BLOCK for $CVE"
-            cat /tmp/worker-decision.out
-            exit 1
-          fi
-          
-          echo "✓ internal-worker (not exposed) does not trigger BLOCK for $CVE"
-          echo "✓ Decision test passed: same CVE yields different decisions based on exposure"
+            --output /tmp/worker-twin.json \
+            --trace "$CVE" \
+            --workload internal-worker \
+            2>&1 | tee /tmp/worker-decision.out
+          WORKER_DECISION=$(grep -E '^DECISION ' /tmp/worker-decision.out | awk '{print $2}')
+          echo "internal-worker decision: $WORKER_DECISION"
+          test "$WORKER_DECISION" = "WARN" || { echo "ERROR: expected WARN for internal-worker, got ${WORKER_DECISION:-empty}"; cat /tmp/worker-decision.out; exit 1; }
+
+          echo "✓ same CVE $CVE → BLOCK on payment-api, WARN on internal-worker"

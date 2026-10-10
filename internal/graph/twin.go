@@ -3,6 +3,7 @@ package graph
 import (
 	"encoding/json"
 	"os"
+	"strings"
 )
 
 type CVE struct {
@@ -68,11 +69,68 @@ func Load(path string) (*Twin, error) {
 
 func (t *Twin) Artifact(image string) *Artifact {
 	for i := range t.Artifacts {
-		if t.Artifacts[i].Image == image {
+		if t.Artifacts[i].Image == image || ImagesMatch(t.Artifacts[i].Image, image) {
 			return &t.Artifacts[i]
 		}
 	}
 	return nil
+}
+
+// ImageName returns the repository name of an image ref (nginx from nginx:alpine).
+func ImageName(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if i := strings.Index(ref, "@"); i >= 0 {
+		ref = ref[:i]
+	}
+	if i := strings.LastIndex(ref, "/"); i >= 0 {
+		ref = ref[i+1:]
+	}
+	if i := strings.Index(ref, ":"); i >= 0 {
+		ref = ref[:i]
+	}
+	return ref
+}
+
+// ImagesMatch reports whether two image refs refer to the same repository
+// (nginx matches nginx:alpine; registry.k8s.io/coredns/coredns does not).
+func ImagesMatch(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	an, bn := ImageName(a), ImageName(b)
+	return an != "" && an == bn
+}
+
+// BindWorkloads attaches live workloads and clones the SBOM artifact onto
+// each matching cluster image so CVE → package → image → workload lines up.
+func (t *Twin) BindWorkloads(workloads []Workload) {
+	t.Workloads = workloads
+	if len(t.Artifacts) == 0 {
+		return
+	}
+	seen := make(map[string]bool, len(t.Artifacts))
+	for _, a := range t.Artifacts {
+		seen[a.Image] = true
+	}
+	base := t.Artifacts[0]
+	for _, w := range workloads {
+		if w.Image == "" || seen[w.Image] {
+			continue
+		}
+		if !ImagesMatch(base.Image, w.Image) {
+			continue
+		}
+		clone := base
+		clone.Image = w.Image
+		t.Artifacts = append(t.Artifacts, clone)
+		seen[w.Image] = true
+	}
 }
 
 func (t *Twin) CVE(id string) *CVE {
