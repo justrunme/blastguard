@@ -1,9 +1,42 @@
-Failed to parse SBOM using all supported formats:
-failed to parse SPDX:
-	failed trying json: JSON document does not contain spdxVersion field
-	failed trying rdf: found extra chars before tag start
-	failed trying tv: unsupported SPDX version: ''
-failed to parse CycloneDX:
-	failed trying json: invalid specification version
-	failed trying xml: XML syntax error on line 1: invalid character entity &distro (no semicolon)
-No package sources found, --help for usage information.
+{
+  "results": [
+    {
+      "package": {
+        "name": "zlib",
+        "version": "1.3.1",
+        "ecosystem": "Alpine"
+      },
+      "vulnerabilities": [
+        {
+          "id": "CVE-2026-85091",
+          "summary": "zlib versions 1.3.1.2 through 1.3.2 contain a heap buffer overflow vulnerability",
+          "severity": [
+            {
+              "type": "CVSS_V3",
+              "score": "CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:N/I:H/A:H/8.3"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "package": {
+        "name": "busybox",
+        "version": "1.36.1",
+        "ecosystem": "Alpine"
+      },
+      "vulnerabilities": [
+        {
+          "id": "CVE-2025-60876",
+          "summary": "BusyBox wget thru 1.3.7 accepted raw CR/LF in HTTP request-target",
+          "severity": [
+            {
+              "type": "CVSS_V3",
+              "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:H/A:N/6.5"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

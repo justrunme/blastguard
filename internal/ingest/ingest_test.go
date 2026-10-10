@@ -57,6 +57,23 @@ func TestIngestGrype(t *testing.T) {
 	}
 }
 
+func TestIngestOSV(t *testing.T) {
+	wd, _ := os.Getwd()
+	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-osv.json")
+	if _, err := os.Stat(testdata); os.IsNotExist(err) {
+		t.Skip("testdata not available")
+	}
+	
+	b := NewBuilder()
+	if err := b.IngestOSV(testdata); err != nil {
+		t.Fatalf("IngestOSV failed: %v", err)
+	}
+	
+	if len(b.cves) == 0 {
+		t.Error("Expected CVEs to be ingested from OSV")
+	}
+}
+
 func TestIngestVEX(t *testing.T) {
 	wd, _ := os.Getwd()
 	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-vex.json")

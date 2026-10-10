@@ -24,14 +24,20 @@ func NewScanner(kubeconfig string) (*Scanner, error) {
 	var config *rest.Config
 	var err error
 	
+	loadingRules := clientcmd.NewDefaultClientConfigLoadingRules()
 	if kubeconfig != "" {
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfig)
-	} else {
-		config, err = rest.InClusterConfig()
+		loadingRules.ExplicitPath = kubeconfig
 	}
 	
+	configOverrides := &clientcmd.ConfigOverrides{}
+	
+	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(loadingRules, configOverrides)
+	config, err = clientConfig.ClientConfig()
 	if err != nil {
-		return nil, fmt.Errorf("failed to build config: %w", err)
+		config, err = rest.InClusterConfig()
+		if err != nil {
+			return nil, fmt.Errorf("failed to build config from kubeconfig or in-cluster: %w", err)
+		}
 	}
 	
 	clientset, err := kubernetes.NewForConfig(config)

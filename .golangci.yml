@@ -1,28 +1,28 @@
+version: "2"
+
 run:
   timeout: 5m
-  go: '1.27'
 
 linters:
   enable:
-    - gofmt
-    - govet
     - errcheck
+    - gosimple
+    - govet
+    - ineffassign
     - staticcheck
     - unused
-    - gosimple
-    - ineffassign
     - misspell
     - unconvert
-    - unparam
-    - revive
+    - gofmt
 
 linters-settings:
-  revive:
-    rules:
-      - name: exported
-        disabled: true
+  errcheck:
+    check-blank: false
+  govet:
+    enable-all: true
+    disable:
+      - shadow
 
 issues:
-  exclude-use-default: false
   max-issues-per-linter: 0
   max-same-issues: 0

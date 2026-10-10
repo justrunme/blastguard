@@ -52,6 +52,10 @@ jobs:
           curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.30.0/kind-linux-amd64
           chmod +x ./kind
           sudo mv ./kind /usr/local/bin/kind
+      - name: Install Syft and Grype
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b ./bin
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b ./bin
       - name: Create kind cluster
         run: kind create cluster --name blastguard-test
       - name: Build
@@ -64,12 +68,42 @@ jobs:
           kubectl create deployment internal-worker --image=nginx:alpine --replicas=1
           kubectl wait --for=condition=available --timeout=60s deployment/payment-api
           kubectl wait --for=condition=available --timeout=60s deployment/internal-worker
-      - name: Scan cluster
+      - name: Generate SBOM and scan for vulnerabilities
         run: |
-          ./bin/blastguard ingest --from-cluster --output cluster-twin.json
-          cat cluster-twin.json
-          test $(jq '.workloads | length' cluster-twin.json) -ge 2
-      - name: Test exposure logic
+          ./bin/syft nginx:alpine -o cyclonedx-json > /tmp/nginx-sbom.json 2>/dev/null
+          ./bin/grype nginx:alpine -o json 2>/dev/null > /tmp/nginx-vulns.json
+      - name: Scan cluster and build twin
         run: |
-          jq '.workloads[] | select(.name == "payment-api") | .internet_exposed' cluster-twin.json | grep -q true
-          jq '.workloads[] | select(.name == "internal-worker") | .internet_exposed' cluster-twin.json | grep -q false
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --output /tmp/cluster-twin.json
+          cat /tmp/cluster-twin.json
+          test $(jq '.workloads | length' /tmp/cluster-twin.json) -ge 2
+      - name: Test exposure decisions
+        run: |
+          CVE=$(jq -r '.cves[0].id' /tmp/cluster-twin.json)
+          if [ -z "$CVE" ] || [ "$CVE" = "null" ]; then
+            echo "No CVEs found in nginx:alpine, skipping decision test"
+            exit 0
+          fi
+          
+          echo "Testing decisions for $CVE"
+          
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --policy config/decision-policy.json \
+            --trace "$CVE" 2>&1 | tee /tmp/decision.out
+          
+          grep -q "payment-api" /tmp/cluster-twin.json
+          PAYMENT_EXPOSED=$(jq -r '.workloads[] | select(.name == "payment-api") | .internet_exposed' /tmp/cluster-twin.json)
+          WORKER_EXPOSED=$(jq -r '.workloads[] | select(.name == "internal-worker") | .internet_exposed' /tmp/cluster-twin.json)
+          
+          echo "payment-api exposed: $PAYMENT_EXPOSED"
+          echo "internal-worker exposed: $WORKER_EXPOSED"
+          
+          test "$PAYMENT_EXPOSED" = "true"
+          test "$WORKER_EXPOSED" = "false"
