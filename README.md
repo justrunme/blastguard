@@ -1,29 +1,43 @@
 # BlastGuard
 
-**Don't count vulnerabilities. Predict their blast radius.**
-
-<p align="center">
-  <img src="docs/assets/blastguard-lifecycle.svg" alt="Discover Trace Decide Enforce Verify" width="100%" />
-</p>
-
-A CVE is not a risk until you know **where it can reach**.
-
-BlastGuard is a **Supply Chain Blast-Radius Control Plane**: it turns SBOM + runtime + exposure + VEX into an explainable decision — then proves remediation.
+Don't count vulnerabilities. Predict their blast radius.
 
 [![CI](https://github.com/justrunme/blastguard/actions/workflows/ci.yml/badge.svg)](https://github.com/justrunme/blastguard/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/justrunme/blastguard?display_name=tag)](https://github.com/justrunme/blastguard/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/blastguard/)
 
 Case study: [BlastGuard](https://justrunme.com/cases/blastguard/) · [Andrey Lesnikov](https://justrunme.com/)
 
-```text
-Discover → Trace → Decide → Enforce → Verify
+## What it does
+
+- Traces CVE → package → image → workload → exposure into an explainable ALLOW / WARN / QUARANTINE / BLOCK decision
+- Combines SBOM, vuln scanners, runtime reachability, and VEX-oriented inputs into a decision layer
+- Supports what-if rehearsal and before/after remediation proof (`make demo`, `make rehearse`, `make prove`)
+
+## Why
+
+- CVE dashboards count findings; operators need reachability and exposure to prioritize
+- Remediation should prove the critical path is closed, not only that a ticket was filed
+
+## Quickstart
+
+```bash
+make demo
+make rehearse
+make prove
 ```
 
-Not another Syft → Grype → CVE dashboard.  
-The scanners already exist. BlastGuard is the **decision layer** on top.
+## Architecture
 
----
+```mermaid
+flowchart LR
+  Ingest[internal/ingest SBOM/vuln] --> Graph[internal/graph]
+  Cluster[internal/cluster runtime] --> Graph
+  Graph --> Decide[internal/decide]
+  Decide --> CLI[cmd/blastguard]
+  CLI --> Out[ALLOW / WARN / QUARANTINE / BLOCK]
+  CI[.github/workflows/ci.yml] --> Rel[release.yml]
+```
 
 ## Why this exists
 
