@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
@@ -30,10 +29,29 @@ jobs:
         run: go build -o bin/blastguard ./cmd/blastguard
       - name: Demo test
         run: |
-          ./bin/blastguard demo CVE-2026-1234 | grep -q 'BLOCK'
+          set +e
+          ./bin/blastguard demo CVE-2026-1234 --output json > /tmp/demo.json
+          code=$?
+          set -e
+          cat /tmp/demo.json
+          jq -e '.action == "BLOCK"' /tmp/demo.json
+          test "$code" -eq 2
       - name: Prove remediation
         run: |
           ./bin/blastguard prove | grep -q 'REMEDIATION PROVED'
+      - name: Exit codes / fail-on warn
+        run: |
+          set +e
+          ./bin/blastguard demo CVE-2026-2345 --output json > /tmp/warn.json
+          code=$?
+          set -e
+          # MEDIUM reachable → WARN → exit 0 without --fail-on
+          test "$code" -eq 0
+          set +e
+          ./bin/blastguard demo CVE-2026-2345 --fail-on warn >/dev/null
+          code=$?
+          set -e
+          test "$code" -eq 1
       - name: Test ingest
         run: |
           ./bin/syft alpine:3.20 -o cyclonedx-json > /tmp/alpine-cdx.json 2>/dev/null
@@ -95,11 +113,14 @@ jobs:
 
           PAYMENT_EXPOSED=$(jq -r '.workloads[] | select(.name == "payment-api") | .internet_exposed' /tmp/cluster-twin.json)
           WORKER_EXPOSED=$(jq -r '.workloads[] | select(.name == "internal-worker") | .internet_exposed' /tmp/cluster-twin.json)
-          echo "payment-api exposed: $PAYMENT_EXPOSED"
+          PAYMENT_REACHABLE=$(jq -r '.workloads[] | select(.name == "payment-api") | .reachable_path' /tmp/cluster-twin.json)
+          echo "payment-api exposed: $PAYMENT_EXPOSED reachable: $PAYMENT_REACHABLE"
           echo "internal-worker exposed: $WORKER_EXPOSED"
           test "$PAYMENT_EXPOSED" = "true" || { echo "ERROR: payment-api should be exposed"; exit 1; }
+          test "$PAYMENT_REACHABLE" = "true" || { echo "ERROR: payment-api should be reachable (no default-deny NP)"; exit 1; }
           test "$WORKER_EXPOSED" = "false" || { echo "ERROR: internal-worker should not be exposed"; exit 1; }
 
+          set +e
           ./bin/blastguard ingest \
             --sbom-cyclonedx /tmp/nginx-sbom.json \
             --vulns-grype /tmp/nginx-vulns.json \
@@ -109,10 +130,14 @@ jobs:
             --trace "$CVE" \
             --workload payment-api \
             2>&1 | tee /tmp/payment-decision.out
+          PAYMENT_CODE=${PIPESTATUS[0]}
+          set -e
           PAYMENT_DECISION=$(grep -E '^DECISION ' /tmp/payment-decision.out | awk '{print $2}')
-          echo "payment-api decision: $PAYMENT_DECISION"
+          echo "payment-api decision: $PAYMENT_DECISION exit=$PAYMENT_CODE"
           test "$PAYMENT_DECISION" = "BLOCK" || { echo "ERROR: expected BLOCK for payment-api, got ${PAYMENT_DECISION:-empty}"; cat /tmp/payment-decision.out; exit 1; }
+          test "$PAYMENT_CODE" -eq 2 || { echo "ERROR: expected exit 2 for BLOCK, got $PAYMENT_CODE"; exit 1; }
 
+          set +e
           ./bin/blastguard ingest \
             --sbom-cyclonedx /tmp/nginx-sbom.json \
             --vulns-grype /tmp/nginx-vulns.json \
@@ -122,8 +147,11 @@ jobs:
             --trace "$CVE" \
             --workload internal-worker \
             2>&1 | tee /tmp/worker-decision.out
+          WORKER_CODE=${PIPESTATUS[0]}
+          set -e
           WORKER_DECISION=$(grep -E '^DECISION ' /tmp/worker-decision.out | awk '{print $2}')
-          echo "internal-worker decision: $WORKER_DECISION"
+          echo "internal-worker decision: $WORKER_DECISION exit=$WORKER_CODE"
           test "$WORKER_DECISION" = "WARN" || { echo "ERROR: expected WARN for internal-worker, got ${WORKER_DECISION:-empty}"; cat /tmp/worker-decision.out; exit 1; }
+          test "$WORKER_CODE" -eq 0 || { echo "ERROR: expected exit 0 for WARN without --fail-on, got $WORKER_CODE"; exit 1; }
 
           echo "✓ same CVE $CVE → BLOCK on payment-api, WARN on internal-worker"

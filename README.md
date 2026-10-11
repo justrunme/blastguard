@@ -95,10 +95,10 @@ No fake `Risk 83/100`. Decisions are **ALLOW / WARN / QUARANTINE / BLOCK** with 
 
 | Stage | What happens |
 |---|---|
-| **Discover** | SBOM (Syft/CycloneDX/SPDX), vulns (Grype/Trivy/OSV), signatures (Cosign) |
-| **Trace** | CVE → package → image → workload → service → ingress (+ transitive edges) |
+| **Discover** | SBOM (Syft/CycloneDX/SPDX), vulns (Grype/Trivy/OSV), optional `cosign verify-attestation` |
+| **Trace** | CVE → package → image → workload → Service selector → Ingress; reachability ≠ exposure ([docs](docs/exposure-reachability.md)) |
 | **Decide** | Policy over CVSS/EPSS/VEX/runtime/exposure/criticality/fix availability |
-| **Enforce** | Admission (Sigstore policy-controller / Kyverno) — ALLOW/WARN/QUARANTINE/BLOCK |
+| **Enforce** | CI gate via CLI exit codes (`0` ALLOW, `1` WARN with `--fail-on warn`, `2` BLOCK/QUARANTINE). In-cluster admission (Kyverno / policy-controller) is out of tree — emit decisions into your policy engine |
 | **Verify** | After patch: blast radius → 0 · **REMEDIATION PROVED** |
 
 ---
@@ -163,9 +163,13 @@ make prove     # before/after remediation evidence
 ```bash
 ./bin/blastguard rehearse CVE-2026-1234
 ./bin/blastguard rehearse image ghcr.io/justrunme/payment-api:v42
+./bin/blastguard demo CVE-2026-1234 --output json   # exit 2 on BLOCK
+./bin/blastguard demo CVE-2026-2345 --fail-on warn  # exit 1 on WARN
 ```
 
 Ask before production changes: *if this becomes exploitable, what is our blast radius?*
+
+Demo workload / fix-image defaults live in `config/demo.json` and `fixtures/` — not in core matching logic.
 
 ---
 

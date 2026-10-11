@@ -2,7 +2,7 @@
 version: 1
 name: supply-chain-blast-radius
 tagline: Don't count vulnerabilities. Predict their blast radius.
-lifecycle: Discover → Trace → Decide → Enforce → Verify
+lifecycle: Discover → Trace → Decide → Enforce (CI exit codes) → Verify
 
 # Ordered evaluation — first matching action wins.
 rules:
@@ -17,14 +17,20 @@ rules:
       vex_not_affected: false
     reason_template: "exploitable CVE + running in production + internet exposed + critical service"
 
-  - id: high-running-fixable
+  # QUARANTINE requires elevated exposure (exposed + reachable), not merely
+  # "running + fix available". Internal non-exposed workloads stay WARN so the
+  # blast-radius ladder is: critical path → BLOCK, exposed fixable → QUARANTINE,
+  # present-only → WARN. Missing SBOM/provenance alone does not escalate.
+  - id: high-exposed-fixable
     action: QUARANTINE
     when:
       severity_at_least: HIGH
       running: true
+      internet_exposed: true
+      reachable_path: true
       vex_not_affected: false
       fix_available: true
-    reason_template: "HIGH CVE present on running workload with fix available"
+    reason_template: "HIGH CVE with fix available on internet-exposed reachable workload (non-critical path)"
 
   - id: medium-reachable
     action: WARN

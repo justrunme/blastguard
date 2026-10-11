@@ -1,12 +1,15 @@
 package decide
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 
+	"github.com/justrunme/blastguard/internal/config"
 	"github.com/justrunme/blastguard/internal/graph"
+	"github.com/justrunme/blastguard/internal/verify"
 )
 
 type When struct {
@@ -17,6 +20,7 @@ type When struct {
 	CriticalService *bool   `json:"critical_service"`
 	VEXNotAffected  *bool   `json:"vex_not_affected"`
 	FixAvailable    *bool   `json:"fix_available"`
+	Provenance      *string `json:"provenance"`
 }
 
 type Rule struct {
@@ -37,25 +41,25 @@ type Policy struct {
 }
 
 type Signals struct {
-	CVE             string
-	Package         string
-	Severity        string
-	CVSS            float64
-	EPSS            float64
-	FixAvailable    bool
-	Running         bool
-	InternetExposed bool
-	ReachablePath   bool
-	CriticalService bool
-	VEXNotAffected  bool
-	AffectedArts    int
-	RunningWLs      int
-	ExposedWLs      int
-	ReachableWLs    int
-	CriticalPath    []string
-	SBOM            string
-	Provenance      string
-	FixImage        string
+	CVE             string   `json:"cve"`
+	Package         string   `json:"package"`
+	Severity        string   `json:"severity"`
+	CVSS            float64  `json:"cvss"`
+	EPSS            float64  `json:"epss"`
+	FixAvailable    bool     `json:"fix_available"`
+	Running         bool     `json:"running"`
+	InternetExposed bool     `json:"internet_exposed"`
+	ReachablePath   bool     `json:"reachable_path"`
+	CriticalService bool     `json:"critical_service"`
+	VEXNotAffected  bool     `json:"vex_not_affected"`
+	AffectedArts    int      `json:"affected_artifacts"`
+	RunningWLs      int      `json:"running_workloads"`
+	ExposedWLs      int      `json:"exposed_workloads"`
+	ReachableWLs    int      `json:"reachable_workloads"`
+	CriticalPath    []string `json:"critical_path"`
+	SBOM            string   `json:"sbom"`
+	Provenance      string   `json:"provenance"`
+	FixImage        string   `json:"fix_image,omitempty"`
 }
 
 type Decision struct {
@@ -63,6 +67,13 @@ type Decision struct {
 	RuleID  string  `json:"rule_id"`
 	Reason  string  `json:"reason"`
 	Signals Signals `json:"signals"`
+}
+
+// TraceOptions controls optional attestation verification and fix lookup.
+type TraceOptions struct {
+	Verifier           verify.Verifier
+	Demo               *config.Demo
+	VerifyAttestations bool
 }
 
 func LoadPolicy(path string) (*Policy, error) {
@@ -89,6 +100,13 @@ func matchBool(want *bool, have bool) bool {
 		return true
 	}
 	return *want == have
+}
+
+func matchString(want *string, have string) bool {
+	if want == nil {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(*want), strings.TrimSpace(have))
 }
 
 func (p *Policy) Evaluate(s Signals) Decision {
@@ -124,6 +142,9 @@ func (p *Policy) Evaluate(s Signals) Decision {
 		if !matchBool(w.FixAvailable, s.FixAvailable) {
 			continue
 		}
+		if !matchString(w.Provenance, s.Provenance) {
+			continue
+		}
 		return Decision{Action: r.Action, RuleID: r.ID, Reason: r.ReasonTemplate, Signals: s}
 	}
 	return Decision{Action: "WARN", RuleID: "fallback", Reason: "no policy rule matched", Signals: s}
@@ -136,6 +157,11 @@ func TraceCVE(t *graph.Twin, cveID string) (Signals, error) {
 
 // TraceCVEWorkload builds signals for one CVE, optionally scoped to a single workload name.
 func TraceCVEWorkload(t *graph.Twin, cveID, workload string) (Signals, error) {
+	return TraceCVEWorkloadOpts(t, cveID, workload, TraceOptions{})
+}
+
+// TraceCVEWorkloadOpts is TraceCVEWorkload with attestation / fix-image options.
+func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptions) (Signals, error) {
 	cve := t.CVE(cveID)
 	if cve == nil {
 		return Signals{}, fmt.Errorf("unknown CVE %s", cveID)
@@ -147,13 +173,42 @@ func TraceCVEWorkload(t *graph.Twin, cveID, workload string) (Signals, error) {
 		CVSS:         cve.CVSS,
 		EPSS:         cve.EPSS,
 		FixAvailable: cve.FixAvailable,
-		SBOM:         "VERIFIED",
-		Provenance:   "VERIFIED",
+		SBOM:         graph.StatusMissing,
+		Provenance:   graph.StatusMissing,
 	}
 
 	var criticalPath []string
-	for _, a := range t.Artifacts {
-		if !graph.PackageAffected(&a, cve) {
+	var sbomStatus, provStatus string
+	statusSet := false
+	for i := range t.Artifacts {
+		a := &t.Artifacts[i]
+		if opts.VerifyAttestations {
+			ver := opts.Verifier
+			if ver == nil {
+				ver = verify.Default()
+			}
+			r := ver.Verify(context.Background(), a.Image)
+			verify.ApplyToArtifact(a, r)
+		} else {
+			a.SBOM = graph.NormalizeStatus(a.SBOM)
+			a.Provenance = graph.NormalizeStatus(a.Provenance)
+			a.Signature = graph.NormalizeStatus(a.Signature)
+		}
+
+		// Aggregate SBOM/provenance only for artifacts in the traced scope.
+		// Unrelated BindWorkloads stubs (coredns, etc.) must not force MISSING.
+		if artifactRelevantForStatus(t, a, cve, workload) {
+			if !statusSet {
+				sbomStatus = a.SBOM
+				provStatus = a.Provenance
+				statusSet = true
+			} else {
+				sbomStatus = worstStatus(sbomStatus, a.SBOM)
+				provStatus = worstStatus(provStatus, a.Provenance)
+			}
+		}
+
+		if !graph.TwinPackageAffected(t, a, cve) {
 			continue
 		}
 		if t.VEXStatus(cve.ID, a.Image) == "not_affected" {
@@ -194,11 +249,21 @@ func TraceCVEWorkload(t *graph.Twin, cveID, workload string) (Signals, error) {
 		}
 	}
 
+	s.SBOM = sbomStatus
+	s.Provenance = provStatus
+	if s.SBOM == "" {
+		s.SBOM = graph.StatusMissing
+	}
+	if s.Provenance == "" {
+		s.Provenance = graph.StatusMissing
+	}
+
 	// VEX-only path: if every artifact is not_affected
 	allVEX := true
 	anyArt := false
-	for _, a := range t.Artifacts {
-		if !graph.PackageAffected(&a, cve) {
+	for i := range t.Artifacts {
+		a := &t.Artifacts[i]
+		if !graph.TwinPackageAffected(t, a, cve) {
 			continue
 		}
 		anyArt = true
@@ -212,10 +277,99 @@ func TraceCVEWorkload(t *graph.Twin, cveID, workload string) (Signals, error) {
 	}
 
 	s.CriticalPath = criticalPath
-
-	// Suggest fix image for payment-api when present
-	if fix := t.Artifact("ghcr.io/justrunme/payment-api:v42"); fix != nil && !graph.PackageAffected(fix, cve) {
-		s.FixImage = fix.Image
-	}
+	s.FixImage = suggestFixImage(t, cve, opts.Demo)
 	return s, nil
+}
+
+func suggestFixImage(t *graph.Twin, cve *graph.CVE, demo *config.Demo) string {
+	candidates := []string{}
+	if demo != nil {
+		candidates = append(candidates, demo.FixImageCandidates...)
+	}
+	for _, img := range candidates {
+		if fix := t.Artifact(img); fix != nil && !graph.TwinPackageAffected(t, fix, cve) {
+			return fix.Image
+		}
+	}
+	// Generic: first artifact that contains the package at a non-affected version.
+	for i := range t.Artifacts {
+		a := &t.Artifacts[i]
+		hasPkg := false
+		for _, p := range a.Packages {
+			if p.Name == cve.Package {
+				hasPkg = true
+				break
+			}
+		}
+		if hasPkg && !graph.TwinPackageAffected(t, a, cve) {
+			return a.Image
+		}
+	}
+	return ""
+}
+
+func worstStatus(a, b string) string {
+	rank := func(s string) int {
+		switch graph.NormalizeStatus(s) {
+		case graph.StatusUnverified:
+			return 2
+		case graph.StatusMissing:
+			return 1
+		case graph.StatusVerified:
+			return 0
+		default:
+			return 1
+		}
+	}
+	if rank(b) > rank(a) {
+		return graph.NormalizeStatus(b)
+	}
+	return graph.NormalizeStatus(a)
+}
+
+// artifactRelevantForStatus reports whether an artifact should contribute to
+// SBOM/provenance signals for this CVE/workload scope.
+// Empty BindWorkloads stubs (no packages, SBOM MISSING) are excluded so they
+// cannot dilute a real ingested SBOM to MISSING via worstStatus.
+func artifactRelevantForStatus(t *graph.Twin, a *graph.Artifact, cve *graph.CVE, workload string) bool {
+	if a == nil {
+		return false
+	}
+	stub := len(a.Packages) == 0 && graph.NormalizeStatus(a.SBOM) == graph.StatusMissing
+	if stub {
+		return false
+	}
+	if workload != "" {
+		for _, w := range t.Workloads {
+			if w.Name != workload {
+				continue
+			}
+			if graph.ImagesMatch(w.Image, a.Image) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(a.Packages) > 0 {
+		return true
+	}
+	return graph.TwinPackageAffected(t, a, cve)
+}
+
+// ExitCode maps a decision to process exit status.
+// 0 = ALLOW (and WARN unless failOnWarn), 1 = WARN when failOnWarn, 2 = BLOCK/QUARANTINE.
+func ExitCode(action string, failOnWarn bool) int {
+	switch strings.ToUpper(strings.TrimSpace(action)) {
+	case "ALLOW":
+		return 0
+	case "WARN":
+		if failOnWarn {
+			return 1
+		}
+		return 0
+	case "BLOCK", "QUARANTINE":
+		return 2
+	default:
+		return 2
+	}
 }

@@ -6,6 +6,13 @@ import (
 	"strings"
 )
 
+// Supply-chain verification states for SBOM / provenance / signature signals.
+const (
+	StatusVerified   = "VERIFIED"
+	StatusUnverified = "UNVERIFIED"
+	StatusMissing    = "MISSING"
+)
+
 type CVE struct {
 	ID           string  `json:"id"`
 	Package      string  `json:"package"`
@@ -15,15 +22,28 @@ type CVE struct {
 	EPSS         float64 `json:"epss"`
 	FixAvailable bool    `json:"fix_available"`
 	Description  string  `json:"description"`
+	Ecosystem    string  `json:"ecosystem,omitempty"`
 }
 
 type Pkg struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Name      string `json:"name"`
+	Version   string `json:"version"`
+	Ecosystem string `json:"ecosystem,omitempty"`
+}
+
+// Match is a scanner-confirmed affected edge (Grype/Trivy/OSV already matched
+// this package version). When present for a CVE, matches are authoritative.
+type Match struct {
+	CVE       string `json:"cve"`
+	Package   string `json:"package"`
+	Version   string `json:"version"`
+	Image     string `json:"image,omitempty"`
+	Ecosystem string `json:"ecosystem,omitempty"`
 }
 
 type Artifact struct {
 	Image      string `json:"image"`
+	Digest     string `json:"digest,omitempty"`
 	Packages   []Pkg  `json:"packages"`
 	SBOM       string `json:"sbom"`
 	Provenance string `json:"provenance"`
@@ -34,6 +54,7 @@ type Workload struct {
 	Name            string `json:"name"`
 	Namespace       string `json:"namespace"`
 	Image           string `json:"image"`
+	ImageID         string `json:"image_id,omitempty"`
 	Replicas        int    `json:"replicas"`
 	Critical        bool   `json:"critical"`
 	InternetExposed bool   `json:"internet_exposed"`
@@ -53,6 +74,7 @@ type Twin struct {
 	Artifacts []Artifact `json:"artifacts"`
 	Workloads []Workload `json:"workloads"`
 	VEX       []VEX      `json:"vex"`
+	Matches   []Match    `json:"matches,omitempty"`
 }
 
 func Load(path string) (*Twin, error) {
@@ -69,7 +91,30 @@ func Load(path string) (*Twin, error) {
 
 func (t *Twin) Artifact(image string) *Artifact {
 	for i := range t.Artifacts {
-		if t.Artifacts[i].Image == image || ImagesMatch(t.Artifacts[i].Image, image) {
+		if t.Artifacts[i].Image == image {
+			return &t.Artifacts[i]
+		}
+	}
+	// Fall back to repository-name match only when no exact tag/digest hit.
+	for i := range t.Artifacts {
+		if ImagesMatch(t.Artifacts[i].Image, image) {
+			return &t.Artifacts[i]
+		}
+	}
+	return nil
+}
+
+// ArtifactByDigest returns an artifact pinned by content digest when available.
+func (t *Twin) ArtifactByDigest(digest string) *Artifact {
+	digest = strings.TrimSpace(digest)
+	if digest == "" {
+		return nil
+	}
+	for i := range t.Artifacts {
+		if t.Artifacts[i].Digest == digest || strings.HasSuffix(t.Artifacts[i].Image, "@"+digest) {
+			return &t.Artifacts[i]
+		}
+		if strings.Contains(t.Artifacts[i].Image, digest) {
 			return &t.Artifacts[i]
 		}
 	}
@@ -107,30 +152,46 @@ func ImagesMatch(a, b string) bool {
 	return an != "" && an == bn
 }
 
-// BindWorkloads attaches live workloads and clones the SBOM artifact onto
-// each matching cluster image so CVE → package → image → workload lines up.
+// BindWorkloads attaches live workloads. SBOM packages are never cloned across
+// different tags/digests (nginx:1.25 must not imply nginx:1.27). A stub artifact
+// is added only when the exact image ref is absent.
 func (t *Twin) BindWorkloads(workloads []Workload) {
 	t.Workloads = workloads
-	if len(t.Artifacts) == 0 {
-		return
-	}
 	seen := make(map[string]bool, len(t.Artifacts))
 	for _, a := range t.Artifacts {
 		seen[a.Image] = true
 	}
-	base := t.Artifacts[0]
 	for _, w := range workloads {
 		if w.Image == "" || seen[w.Image] {
 			continue
 		}
-		if !ImagesMatch(base.Image, w.Image) {
+		if w.ImageID != "" {
+			if a := t.ArtifactByDigest(w.ImageID); a != nil {
+				continue
+			}
+		}
+		if hasExactImage(t, w.Image) {
 			continue
 		}
-		clone := base
-		clone.Image = w.Image
-		t.Artifacts = append(t.Artifacts, clone)
+		t.Artifacts = append(t.Artifacts, Artifact{
+			Image:      w.Image,
+			Digest:     w.ImageID,
+			Packages:   nil,
+			SBOM:       StatusMissing,
+			Provenance: StatusMissing,
+			Signature:  StatusMissing,
+		})
 		seen[w.Image] = true
 	}
+}
+
+func hasExactImage(t *Twin, image string) bool {
+	for _, a := range t.Artifacts {
+		if a.Image == image {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *Twin) CVE(id string) *CVE {
@@ -151,27 +212,93 @@ func (t *Twin) VEXStatus(cve, image string) string {
 	return ""
 }
 
-// PackageAffected is intentionally simple for the demo twin:
-// if the artifact lists the package name, treat it as in-range unless version equals a known fixed marker.
+// PackageAffected reports whether artifact a is affected by cve.
+// Prefer scanner Match edges when present for the CVE; otherwise evaluate
+// VersionRange with an ecosystem-aware comparator. Never use lexicographic
+// string compares and never treat "any version" as affected.
 func PackageAffected(a *Artifact, cve *CVE) bool {
+	return PackageAffectedWithMatches(a, cve, nil)
+}
+
+// PackageAffectedWithMatches is PackageAffected with optional twin-level matches.
+func PackageAffectedWithMatches(a *Artifact, cve *CVE, matches []Match) bool {
 	if a == nil || cve == nil {
+		return false
+	}
+
+	cveHasMatches := false
+	for _, m := range matches {
+		if m.CVE == cve.ID {
+			cveHasMatches = true
+			break
+		}
+	}
+
+	// Scanner matches for this CVE are authoritative: do not fall back to ranges.
+	if cveHasMatches {
+		for _, m := range matches {
+			if m.CVE != cve.ID {
+				continue
+			}
+			if m.Image != "" && a.Image != "" && !ImagesMatch(m.Image, a.Image) && a.Image != m.Image {
+				continue
+			}
+			if len(a.Packages) == 0 {
+				return true
+			}
+			for _, p := range a.Packages {
+				if p.Name != m.Package {
+					continue
+				}
+				if m.Version == "" || p.Version == m.Version {
+					return true
+				}
+			}
+		}
+		return false
+	}
+
+	if strings.TrimSpace(cve.VersionRange) == "" {
 		return false
 	}
 	for _, p := range a.Packages {
 		if p.Name != cve.Package {
 			continue
 		}
-		// Demo fixed versions: openssl 3.3.2+, libxml2 2.12.8+, x/net 0.34.0+
-		switch cve.Package {
-		case "openssl":
-			return p.Version < "3.3.2"
-		case "libxml2":
-			return p.Version < "2.12.8"
-		case "golang.org/x/net":
-			return p.Version < "0.34.0"
-		default:
+		eco := p.Ecosystem
+		if eco == "" {
+			eco = cve.Ecosystem
+		}
+		eco = InferEcosystem(p.Name, eco)
+		ok, err := VersionInRange(p.Version, cve.VersionRange, eco)
+		if err != nil {
+			continue
+		}
+		if ok {
 			return true
 		}
 	}
 	return false
+}
+
+// TwinPackageAffected uses twin.Matches when evaluating.
+func TwinPackageAffected(t *Twin, a *Artifact, cve *CVE) bool {
+	if t == nil {
+		return PackageAffected(a, cve)
+	}
+	return PackageAffectedWithMatches(a, cve, t.Matches)
+}
+
+// NormalizeStatus maps fixture/scanner strings to VERIFIED|UNVERIFIED|MISSING.
+func NormalizeStatus(s string) string {
+	switch strings.ToUpper(strings.TrimSpace(s)) {
+	case StatusVerified, "OK", "PASS", "PASSED":
+		return StatusVerified
+	case StatusUnverified, "INVALID", "FAILED", "FAIL":
+		return StatusUnverified
+	case StatusMissing, "ABSENT", "NONE", "UNKNOWN", "":
+		return StatusMissing
+	default:
+		return StatusMissing
+	}
 }
