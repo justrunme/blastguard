@@ -58,6 +58,32 @@ func TestIngestGrype(t *testing.T) {
 	}
 }
 
+func TestIngestGrypeFileSourceTarget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "grype-file.json")
+	// Newer Grype emits source.target as a string for file/directory/tarball scans.
+	payload := `{
+		"matches": [{
+			"vulnerability": {"id": "CVE-2024-0001", "severity": "HIGH", "description": "test", "fix": {"versions": ["1.2.4"], "state": "fixed"}},
+			"artifact": {"name": "demo", "version": "1.2.3", "type": "go-module", "purl": "pkg:golang/demo@1.2.3"}
+		}],
+		"source": {"type": "file", "target": "dist/blastguard_0.2.0_linux_amd64.tar.gz"}
+	}`
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := NewBuilder()
+	if err := b.IngestGrype(path); err != nil {
+		t.Fatalf("IngestGrype file target failed: %v", err)
+	}
+	if b.imageRef != "dist/blastguard_0.2.0_linux_amd64.tar.gz" {
+		t.Fatalf("imageRef=%q, want tarball path", b.imageRef)
+	}
+	if len(b.cves) != 1 {
+		t.Fatalf("cves=%d, want 1", len(b.cves))
+	}
+}
+
 func TestIngestOSV(t *testing.T) {
 	wd, _ := os.Getwd()
 	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-osv.json")
