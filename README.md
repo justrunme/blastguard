@@ -12,6 +12,8 @@ Don't count vulnerabilities. Predict their blast radius.
 [![Case study](https://img.shields.io/badge/case-justrunme.com-111111)](https://justrunme.com/cases/blastguard/)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/justrunme/blastguard/badge)](https://securityscorecards.dev/viewer/?uri=github.com/justrunme/blastguard)
 
+Evidence: [docs/EVIDENCE.md](docs/EVIDENCE.md)
+
 Case study: [BlastGuard](https://justrunme.com/cases/blastguard/) · [Andrey Lesnikov](https://justrunme.com/)
 
 ## What it does
