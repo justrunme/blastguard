@@ -26,3 +26,13 @@ This is a **NetworkPolicy-aware approximation** for default-deny namespaces. It 
 ## Criticality
 
 Workloads are critical only when labeled/annotated with `blastguard.io/critical=true` (configurable via `config/demo.json`). Name heuristics such as substring `"api"` are not used.
+
+## Decision ladder vs exposure
+
+Default policy (`config/decision-policy.yaml`) uses exposure to separate actions for the **same** HIGH CVE:
+
+- **BLOCK** — critical + internet-exposed + reachable
+- **QUARANTINE** — internet-exposed + reachable + fix available (non-critical path)
+- **WARN** — present on a running workload without elevated exposure (e.g. `internal-worker`)
+
+`fix_available` alone must not escalate an internal workload to QUARANTINE. SBOM/provenance `MISSING` is a reported signal; it is not an implicit escalator in the default rules.

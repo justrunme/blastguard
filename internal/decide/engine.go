@@ -179,7 +179,7 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 
 	var criticalPath []string
 	var sbomStatus, provStatus string
-	firstArt := true
+	statusSet := false
 	for i := range t.Artifacts {
 		a := &t.Artifacts[i]
 		if opts.VerifyAttestations {
@@ -195,13 +195,17 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 			a.Signature = graph.NormalizeStatus(a.Signature)
 		}
 
-		if firstArt {
-			sbomStatus = a.SBOM
-			provStatus = a.Provenance
-			firstArt = false
-		} else {
-			sbomStatus = worstStatus(sbomStatus, a.SBOM)
-			provStatus = worstStatus(provStatus, a.Provenance)
+		// Aggregate SBOM/provenance only for artifacts in the traced scope.
+		// Unrelated BindWorkloads stubs (coredns, etc.) must not force MISSING.
+		if artifactRelevantForStatus(t, a, cve, workload) {
+			if !statusSet {
+				sbomStatus = a.SBOM
+				provStatus = a.Provenance
+				statusSet = true
+			} else {
+				sbomStatus = worstStatus(sbomStatus, a.SBOM)
+				provStatus = worstStatus(provStatus, a.Provenance)
+			}
 		}
 
 		if !graph.TwinPackageAffected(t, a, cve) {
@@ -321,6 +325,35 @@ func worstStatus(a, b string) string {
 		return graph.NormalizeStatus(b)
 	}
 	return graph.NormalizeStatus(a)
+}
+
+// artifactRelevantForStatus reports whether an artifact should contribute to
+// SBOM/provenance signals for this CVE/workload scope.
+// Empty BindWorkloads stubs (no packages, SBOM MISSING) are excluded so they
+// cannot dilute a real ingested SBOM to MISSING via worstStatus.
+func artifactRelevantForStatus(t *graph.Twin, a *graph.Artifact, cve *graph.CVE, workload string) bool {
+	if a == nil {
+		return false
+	}
+	stub := len(a.Packages) == 0 && graph.NormalizeStatus(a.SBOM) == graph.StatusMissing
+	if stub {
+		return false
+	}
+	if workload != "" {
+		for _, w := range t.Workloads {
+			if w.Name != workload {
+				continue
+			}
+			if graph.ImagesMatch(w.Image, a.Image) {
+				return true
+			}
+		}
+		return false
+	}
+	if len(a.Packages) > 0 {
+		return true
+	}
+	return graph.TwinPackageAffected(t, a, cve)
 }
 
 // ExitCode maps a decision to process exit status.

@@ -43,10 +43,12 @@ func TestSameCVEBlockVsWarnByWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// FixAvailable=true must not escalate internal-worker to QUARANTINE: that
+	// rule requires internet_exposed + reachable (blast-radius ladder).
 	twin := &graph.Twin{
 		CVEs: []graph.CVE{{
 			ID: "CVE-2026-85091", Package: "zlib", Severity: "High",
-			CVSS: 8.3, FixAvailable: false, VersionRange: "<= 1.3.2",
+			CVSS: 8.3, FixAvailable: true, VersionRange: "<= 1.3.2",
 		}},
 		Artifacts: []graph.Artifact{{
 			Image:      "nginx",
@@ -57,6 +59,7 @@ func TestSameCVEBlockVsWarnByWorkload(t *testing.T) {
 		Workloads: []graph.Workload{
 			{Name: "payment-api", Namespace: "default", Image: "nginx:alpine", Replicas: 2, Critical: true, InternetExposed: true, ReachablePath: true, Running: true},
 			{Name: "internal-worker", Namespace: "default", Image: "nginx:alpine", Replicas: 1, Critical: false, InternetExposed: false, ReachablePath: false, Running: true},
+			{Name: "coredns", Namespace: "kube-system", Image: "registry.k8s.io/coredns/coredns:v1.11.0", Replicas: 2, Running: true},
 		},
 		Matches: []graph.Match{{
 			CVE: "CVE-2026-85091", Package: "zlib", Version: "1.3.2-r0", Image: "nginx",
@@ -68,6 +71,9 @@ func TestSameCVEBlockVsWarnByWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if exposed.SBOM != graph.StatusVerified {
+		t.Fatalf("payment-api SBOM: want VERIFIED despite cluster stubs, got %s", exposed.SBOM)
+	}
 	if got := pol.Evaluate(exposed); got.Action != "BLOCK" {
 		t.Fatalf("payment-api: want BLOCK, got %s (%s) signals=%+v", got.Action, got.Reason, exposed)
 	}
@@ -76,8 +82,45 @@ func TestSameCVEBlockVsWarnByWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if internal.SBOM != graph.StatusVerified {
+		t.Fatalf("internal-worker SBOM: want VERIFIED despite cluster stubs, got %s", internal.SBOM)
+	}
 	if got := pol.Evaluate(internal); got.Action != "WARN" {
 		t.Fatalf("internal-worker: want WARN, got %s (%s) signals=%+v", got.Action, got.Reason, internal)
+	}
+}
+
+func TestHighExposedNonCriticalQuarantines(t *testing.T) {
+	pol, err := decide.LoadPolicy(filepath.Join("..", "..", "config", "decision-policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	twin := &graph.Twin{
+		CVEs: []graph.CVE{{
+			ID: "CVE-Q", Package: "zlib", Severity: "HIGH",
+			FixAvailable: true, VersionRange: "<= 1.3.2",
+		}},
+		Artifacts: []graph.Artifact{{
+			Image:    "nginx:alpine",
+			Packages: []graph.Pkg{{Name: "zlib", Version: "1.3.2-r0", Ecosystem: "apk"}},
+			SBOM:     graph.StatusVerified,
+		}},
+		Workloads: []graph.Workload{{
+			Name: "edge-proxy", Namespace: "default", Image: "nginx:alpine",
+			Running: true, InternetExposed: true, ReachablePath: true, Critical: false,
+		}},
+		Matches: []graph.Match{{CVE: "CVE-Q", Package: "zlib", Version: "1.3.2-r0", Image: "nginx:alpine"}},
+	}
+	s, err := decide.TraceCVEWorkload(twin, "CVE-Q", "edge-proxy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := pol.Evaluate(s)
+	if d.Action != "QUARANTINE" {
+		t.Fatalf("want QUARANTINE for exposed non-critical fixable HIGH, got %s (%s)", d.Action, d.Reason)
+	}
+	if d.RuleID != "high-exposed-fixable" {
+		t.Fatalf("want rule high-exposed-fixable, got %s", d.RuleID)
 	}
 }
 

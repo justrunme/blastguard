@@ -18,15 +18,17 @@
       "reason_template": "exploitable CVE + running in production + internet exposed + critical service"
     },
     {
-      "id": "high-running-fixable",
+      "id": "high-exposed-fixable",
       "action": "QUARANTINE",
       "when": {
         "severity_at_least": "HIGH",
         "running": true,
+        "internet_exposed": true,
+        "reachable_path": true,
         "vex_not_affected": false,
         "fix_available": true
       },
-      "reason_template": "HIGH CVE present on running workload with fix available"
+      "reason_template": "HIGH CVE with fix available on internet-exposed reachable workload (non-critical path)"
     },
     {
       "id": "medium-reachable",

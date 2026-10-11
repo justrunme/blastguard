@@ -34,6 +34,17 @@ Pruned by:
 See `config/decision-policy.yaml`.  
 Ordered rules, first match wins. **No percentage risk scores.**
 
+Blast-radius ladder (same HIGH CVE, different runtime context):
+
+| Context | Typical action |
+|---|---|
+| Running + internet-exposed + reachable + critical | **BLOCK** |
+| Running + internet-exposed + reachable + fix available (non-critical) | **QUARANTINE** |
+| Running but not exposed / not reachable | **WARN** |
+| VEX `not_affected` for the artifact | **ALLOW** |
+
+Missing SBOM or provenance is reported as a signal (`MISSING` / `UNVERIFIED`) and may be matched by an explicit policy clause on `provenance`. It does **not** by itself escalate WARN → QUARANTINE in the default policy.
+
 ## CRDs (v1alpha1 sketches)
 
 - `BlastRadius` — observed radius + critical path
