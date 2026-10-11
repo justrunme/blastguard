@@ -35,9 +35,18 @@
     {
       "image": "ghcr.io/justrunme/payment-api:v41",
       "packages": [
-        {"name": "openssl", "version": "3.3.1"},
-        {"name": "libxml2", "version": "2.12.7"},
-        {"name": "golang.org/x/net", "version": "0.33.0"}
+        {
+          "name": "openssl",
+          "version": "3.3.1"
+        },
+        {
+          "name": "libxml2",
+          "version": "2.12.7"
+        },
+        {
+          "name": "golang.org/x/net",
+          "version": "0.33.0"
+        }
       ],
       "sbom": "verified",
       "provenance": "verified",
@@ -46,8 +55,14 @@
     {
       "image": "ghcr.io/justrunme/report-worker:v4.2",
       "packages": [
-        {"name": "openssl", "version": "3.3.1"},
-        {"name": "libxml2", "version": "2.12.9"}
+        {
+          "name": "openssl",
+          "version": "3.3.1"
+        },
+        {
+          "name": "libxml2",
+          "version": "2.12.9"
+        }
       ],
       "sbom": "verified",
       "provenance": "verified",
@@ -56,8 +71,14 @@
     {
       "image": "ghcr.io/justrunme/ml-builder:v2.1",
       "packages": [
-        {"name": "openssl", "version": "3.3.0"},
-        {"name": "golang.org/x/net", "version": "0.32.0"}
+        {
+          "name": "openssl",
+          "version": "3.3.0"
+        },
+        {
+          "name": "golang.org/x/net",
+          "version": "0.32.0"
+        }
       ],
       "sbom": "verified",
       "provenance": "missing",
@@ -66,9 +87,18 @@
     {
       "image": "ghcr.io/justrunme/payment-api:v42",
       "packages": [
-        {"name": "openssl", "version": "3.3.2"},
-        {"name": "libxml2", "version": "2.12.9"},
-        {"name": "golang.org/x/net", "version": "0.34.0"}
+        {
+          "name": "openssl",
+          "version": "3.3.2"
+        },
+        {
+          "name": "libxml2",
+          "version": "2.12.9"
+        },
+        {
+          "name": "golang.org/x/net",
+          "version": "0.34.0"
+        }
       ],
       "sbom": "verified",
       "provenance": "verified",
@@ -112,7 +142,7 @@
       "cve": "CVE-2026-3456",
       "image": "ghcr.io/justrunme/payment-api:v41",
       "status": "not_affected",
-      "justification": "vulnerable code path not compiled into binary"
+      "justification": "vulnerable_code_not_in_execute_path"
     }
   ]
 }

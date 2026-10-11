@@ -212,3 +212,45 @@ func Default() Verifier {
 func FormatDetail(image string, r Result) string {
 	return fmt.Sprintf("%s sbom=%s provenance=%s signature=%s", image, r.SBOM, r.Provenance, r.Signature)
 }
+
+// OpenVEXResult is the outcome of optional cosign verify-attestation --type openvex.
+type OpenVEXResult struct {
+	Status  string // VERIFIED | UNVERIFIED | MISSING
+	Detail  string
+	Payload []byte // attestation payload when available (may be empty)
+}
+
+// VerifyOpenVEX runs `cosign verify-attestation --type openvex` for an image.
+// Optional: callers may still ingest a local OpenVEX file without verification.
+func (v *CosignVerifier) VerifyOpenVEX(ctx context.Context, image string) OpenVEXResult {
+	image = strings.TrimSpace(image)
+	if image == "" {
+		return OpenVEXResult{Status: graph.StatusMissing, Detail: "empty image"}
+	}
+	if v.SkipExec {
+		return OpenVEXResult{Status: graph.StatusMissing, Detail: "cosign skipped"}
+	}
+	bin, err := exec.LookPath(v.bin())
+	if err != nil {
+		return OpenVEXResult{Status: graph.StatusMissing, Detail: "cosign not found in PATH"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, v.timeout())
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "verify-attestation", "--type", "openvex", "--private-infrastructure=true", image)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err = cmd.Run()
+	out := OpenVEXResult{Payload: stdout.Bytes(), Detail: truncate(stderr.String(), 200)}
+	if err == nil {
+		out.Status = graph.StatusVerified
+		return out
+	}
+	out.Status = statusFromCmd(cmdOutcome{err: err, stderr: stderr.String()})
+	return out
+}
+
+// DownloadOpenVEX is an alias helper for VerifyOpenVEX (OCI attestation fetch+verify).
+func (v *CosignVerifier) DownloadOpenVEX(ctx context.Context, image string) OpenVEXResult {
+	return v.VerifyOpenVEX(ctx, image)
+}

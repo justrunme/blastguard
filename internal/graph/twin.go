@@ -65,6 +65,8 @@ type Workload struct {
 type VEX struct {
 	CVE           string `json:"cve"`
 	Image         string `json:"image"`
+	Digest        string `json:"digest,omitempty"`
+	Product       string `json:"product,omitempty"`
 	Status        string `json:"status"`
 	Justification string `json:"justification"`
 }
@@ -204,12 +206,47 @@ func (t *Twin) CVE(id string) *CVE {
 }
 
 func (t *Twin) VEXStatus(cve, image string) string {
-	for _, v := range t.VEX {
-		if v.CVE == cve && v.Image == image {
-			return v.Status
-		}
+	if v := t.VEXFor(cve, image, ""); v != nil {
+		return v.Status
 	}
 	return ""
+}
+
+// VEXForArtifact returns the VEX statement bound to this artifact (digest or exact image).
+func (t *Twin) VEXForArtifact(cve string, a *Artifact) *VEX {
+	if a == nil {
+		return nil
+	}
+	return t.VEXFor(cve, a.Image, a.Digest)
+}
+
+// VEXFor finds a statement for cve bound to image and/or digest.
+// Digest match wins; otherwise exact image ref (including tag) is required.
+// Loose repository-name matches are rejected so not_affected cannot leap across tags.
+func (t *Twin) VEXFor(cve, image, digest string) *VEX {
+	cve = strings.TrimSpace(cve)
+	image = strings.TrimSpace(image)
+	digest = strings.TrimSpace(digest)
+	for i := range t.VEX {
+		v := &t.VEX[i]
+		if v.CVE != cve {
+			continue
+		}
+		if v.Digest != "" {
+			if digest != "" && strings.EqualFold(v.Digest, digest) {
+				return v
+			}
+			if image != "" && (strings.Contains(strings.ToLower(image), strings.ToLower(v.Digest)) ||
+				strings.EqualFold(v.Digest, digest)) {
+				return v
+			}
+			continue
+		}
+		if image != "" && (v.Image == image || v.Product == image) {
+			return v
+		}
+	}
+	return nil
 }
 
 // PackageAffected reports whether artifact a is affected by cve.

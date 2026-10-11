@@ -155,3 +155,89 @@ jobs:
           test "$WORKER_CODE" -eq 0 || { echo "ERROR: expected exit 0 for WARN without --fail-on, got $WORKER_CODE"; exit 1; }
 
           echo "✓ same CVE $CVE → BLOCK on payment-api, WARN on internal-worker"
+
+      - name: OpenVEX not_affected flips decision for matching digest
+        run: |
+          set -euo pipefail
+          CVE=$(jq -r '[.cves[] | select((.severity|ascii_upcase)=="HIGH" or (.severity|ascii_upcase)=="CRITICAL")] | .[0].id' /tmp/cluster-twin.json)
+          DIGEST=$(jq -r '.artifacts[] | select(.image|test("nginx")) | .digest' /tmp/cluster-twin.json | head -1)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            # fall back to grype/syft image id if twin omitted digest
+            DIGEST=$(./bin/syft nginx:alpine -o json 2>/dev/null | jq -r '.source.image.digest // empty' || true)
+          fi
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            DIGEST=$(jq -r '.source.target.imageID // empty' /tmp/nginx-vulns.json)
+          fi
+          test -n "$DIGEST" && test "$DIGEST" != "null"
+          echo "Using digest $DIGEST for CVE $CVE"
+          cat > /tmp/nginx-openvex.json <<JSON
+          {
+            "@context": "https://openvex.dev/ns/v0.2.0",
+            "@id": "https://example.com/vex/nginx-e2e",
+            "author": "blastguard-ci",
+            "timestamp": "2026-10-11T00:00:00Z",
+            "version": "1",
+            "statements": [
+              {
+                "vulnerability": { "name": "$CVE" },
+                "products": [ { "@id": "pkg:oci/nginx@$DIGEST" } ],
+                "status": "not_affected",
+                "justification": "vulnerable_code_not_in_execute_path"
+              }
+            ]
+          }
+          JSON
+          # Wrong digest must NOT flip
+          WRONG='sha256:0000000000000000000000000000000000000000000000000000000000000001'
+          cat > /tmp/nginx-openvex-wrong.json <<JSON
+          {
+            "@context": "https://openvex.dev/ns/v0.2.0",
+            "@id": "https://example.com/vex/nginx-wrong",
+            "author": "blastguard-ci",
+            "timestamp": "2026-10-11T00:00:00Z",
+            "version": "1",
+            "statements": [
+              {
+                "vulnerability": { "name": "$CVE" },
+                "products": [ { "@id": "pkg:oci/nginx@$WRONG" } ],
+                "status": "not_affected",
+                "justification": "vulnerable_code_not_in_execute_path"
+              }
+            ]
+          }
+          JSON
+          set +e
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --vex /tmp/nginx-openvex-wrong.json \
+            --policy config/decision-policy.json \
+            --output /tmp/vex-wrong-twin.json \
+            --trace "$CVE" \
+            --workload payment-api \
+            2>&1 | tee /tmp/vex-wrong.out
+          WRONG_CODE=${PIPESTATUS[0]}
+          set -e
+          WRONG_DECISION=$(grep -E '^DECISION ' /tmp/vex-wrong.out | awk '{print $2}')
+          test "$WRONG_DECISION" = "BLOCK" || { echo "ERROR: wrong digest must keep BLOCK, got ${WRONG_DECISION:-empty}"; exit 1; }
+
+          set +e
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --vex /tmp/nginx-openvex.json \
+            --policy config/decision-policy.json \
+            --output /tmp/vex-ok-twin.json \
+            --trace "$CVE" \
+            --workload payment-api \
+            2>&1 | tee /tmp/vex-ok.out
+          OK_CODE=${PIPESTATUS[0]}
+          set -e
+          OK_DECISION=$(grep -E '^DECISION ' /tmp/vex-ok.out | awk '{print $2}')
+          echo "matching digest VEX decision: $OK_DECISION exit=$OK_CODE"
+          test "$OK_DECISION" = "ALLOW" || { echo "ERROR: expected ALLOW after not_affected for matching digest, got ${OK_DECISION:-empty}"; cat /tmp/vex-ok.out; exit 1; }
+          test "$OK_CODE" -eq 0 || { echo "ERROR: expected exit 0 for ALLOW, got $OK_CODE"; exit 1; }
+          echo "✓ OpenVEX not_affected flips BLOCK→ALLOW only for matching digest"
+

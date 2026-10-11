@@ -14,7 +14,9 @@ import (
 	"github.com/justrunme/blastguard/internal/decide"
 	"github.com/justrunme/blastguard/internal/graph"
 	"github.com/justrunme/blastguard/internal/ingest"
+	"github.com/justrunme/blastguard/internal/remediate"
 	"github.com/justrunme/blastguard/internal/render"
+	"github.com/justrunme/blastguard/internal/runtime"
 	"github.com/justrunme/blastguard/internal/verify"
 )
 
@@ -49,6 +51,8 @@ func main() {
 	case "rehearse":
 		code := runRehearse(flagsFirst(os.Args[2:]), twinPath, policyPath, demo)
 		os.Exit(code)
+	case "remediate":
+		os.Exit(runRemediate(flagsFirst(os.Args[2:]), twinPath))
 	case "prove":
 		fs := flag.NewFlagSet("prove", flag.ExitOnError)
 		output := fs.String("output", "text", "Output format: text|json")
@@ -107,6 +111,7 @@ Usage:
   blastguard rehearse CVE-2026-1234 [--output json] [--fail-on warn]
   blastguard rehearse image <ref> [--workload <name>] [--output json]
   blastguard prove [--output json]
+  blastguard remediate --image <new> [--twin <path>] [--output md|json]
 
 Exit codes (decision commands / ingest --trace):
   0  ALLOW (WARN also exits 0 unless --fail-on warn)
@@ -119,7 +124,10 @@ Commands:
                --sbom-spdx <path>
                --vulns-grype <path>
                --vulns-osv <path>
-               --vex <path>
+               --vex <path> (OpenVEX file)
+               --vex-attestation <image> (optional OCI OpenVEX via cosign)
+               --verify-openvex (require cosign verify-attestation --type openvex)
+               --runtime-evidence <path> (optional Tetragon/Falco export)
                --from-cluster (scan live Kubernetes cluster)
                --kubeconfig <path>
                --output <path|json> (twin file path, or "json" with --trace for decision JSON)
@@ -128,6 +136,11 @@ Commands:
                --workload <name> (scope --trace to one workload)
                --fail-on warn|block
                --verify-attestations
+
+  remediate    Impact report for rolling live workloads to --image
+               --image <ref> (proposed image already in twin)
+               --twin <path>
+               --output md|json
 
 Discover → Trace → Decide → Enforce (CI exit codes) → Verify
 `)
@@ -360,6 +373,9 @@ func runIngest(args []string, root string, demo config.Demo) {
 	vulnsGrype := fs.String("vulns-grype", "", "Grype vulnerability JSON report")
 	vulnsOSV := fs.String("vulns-osv", "", "OSV-Scanner vulnerability JSON report")
 	vexFile := fs.String("vex", "", "OpenVEX document")
+	vexAttestation := fs.String("vex-attestation", "", "Image ref to fetch OpenVEX attestation from (OCI)")
+	verifyOpenVEX := fs.Bool("verify-openvex", false, "Require cosign verify-attestation --type openvex for --vex-attestation")
+	runtimeEvidence := fs.String("runtime-evidence", "", "Optional runtime evidence JSON (blastguard.runtime_evidence/v1)")
 	fromCluster := fs.Bool("from-cluster", false, "Scan live Kubernetes cluster")
 	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig")
 	output := fs.String("output", "", "Output twin JSON file, or 'json' to emit decision JSON with --trace")
@@ -397,11 +413,6 @@ func runIngest(args []string, root string, demo config.Demo) {
 		fmt.Fprintf(os.Stderr, "✓ Ingested OSV-Scanner vulnerabilities from %s\n", *vulnsOSV)
 	}
 
-	if *vexFile != "" {
-		must(builder.IngestVEX(*vexFile))
-		fmt.Fprintf(os.Stderr, "✓ Ingested VEX statements from %s\n", *vexFile)
-	}
-
 	twin := builder.Build()
 
 	if *fromCluster {
@@ -411,6 +422,34 @@ func runIngest(args []string, root string, demo config.Demo) {
 		must(err)
 		twin.BindWorkloads(workloads)
 		fmt.Fprintf(os.Stderr, "✓ Scanned cluster: %d workloads\n", len(workloads))
+	}
+
+	// OpenVEX after artifacts/workloads exist so digest binding can match.
+	if *vexAttestation != "" {
+		cv := &verify.CosignVerifier{}
+		res := cv.VerifyOpenVEX(context.Background(), *vexAttestation)
+		if *verifyOpenVEX && res.Status != graph.StatusVerified {
+			fmt.Fprintf(os.Stderr, "openvex attestation verify failed for %s: %s (%s)\n", *vexAttestation, res.Status, res.Detail)
+			os.Exit(1)
+		}
+		if len(res.Payload) > 0 {
+			warns, err := ingest.ApplyOpenVEXBytes(twin, res.Payload)
+			must(err)
+			for _, w := range warns {
+				fmt.Fprintf(os.Stderr, "⚠ %s\n", w)
+			}
+			fmt.Fprintf(os.Stderr, "✓ Applied OpenVEX attestation from %s (%s)\n", *vexAttestation, res.Status)
+		} else if *vexFile == "" {
+			fmt.Fprintf(os.Stderr, "⚠ OpenVEX attestation for %s: %s — provide --vex file as fallback\n", *vexAttestation, res.Status)
+		}
+	}
+	if *vexFile != "" {
+		warns, err := ingest.ApplyOpenVEX(twin, *vexFile)
+		must(err)
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "⚠ %s\n", w)
+		}
+		fmt.Fprintf(os.Stderr, "✓ Applied OpenVEX from %s\n", *vexFile)
 	}
 
 	writeTwin := *output
@@ -439,6 +478,11 @@ func runIngest(args []string, root string, demo config.Demo) {
 		if *verifyAtt {
 			opts.Verifier = verify.Default()
 		}
+		if *runtimeEvidence != "" {
+			doc, err := runtime.Load(*runtimeEvidence)
+			must(err)
+			opts.RuntimeEvidence = doc
+		}
 		s, err := decide.TraceCVEWorkloadOpts(twin, *traceCVE, *workload, opts)
 		must(err)
 		d := p.Evaluate(s)
@@ -455,6 +499,33 @@ func runIngest(args []string, root string, demo config.Demo) {
 		os.Exit(decide.ExitCode(d.Action, strings.EqualFold(*failOn, "warn")))
 	}
 	_ = root
+}
+
+func runRemediate(args []string, defaultTwin string) int {
+	fs := flag.NewFlagSet("remediate", flag.ExitOnError)
+	image := fs.String("image", "", "Proposed image ref (must already be in twin)")
+	twinPath := fs.String("twin", defaultTwin, "Twin JSON path")
+	output := fs.String("output", "md", "Output format: md|json")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if *image == "" {
+		fmt.Fprintln(os.Stderr, "remediate: --image is required")
+		return 2
+	}
+	t, err := graph.Load(*twinPath)
+	must(err)
+	rep, err := remediate.Compare(t, *image)
+	must(err)
+	if strings.EqualFold(*output, "json") {
+		b, err := rep.JSON()
+		must(err)
+		fmt.Println(string(b))
+	} else {
+		fmt.Print(rep.Markdown())
+	}
+	return 0
 }
 
 func must(err error) {

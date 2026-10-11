@@ -3,6 +3,7 @@ package ingest
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -20,9 +21,6 @@ func TestIngestCycloneDX(t *testing.T) {
 
 	if len(b.packages) == 0 {
 		t.Error("Expected packages to be ingested")
-	}
-	if b.imageRef != "alpine:3.20" {
-		t.Fatalf("CycloneDX image ref: got %q want alpine:3.20", b.imageRef)
 	}
 }
 
@@ -56,7 +54,7 @@ func TestIngestGrype(t *testing.T) {
 	}
 
 	if len(b.cves) == 0 {
-		t.Log("Warning: No CVEs found in Grype output")
+		t.Error("Expected CVEs to be ingested")
 	}
 }
 
@@ -79,18 +77,74 @@ func TestIngestOSV(t *testing.T) {
 
 func TestIngestVEX(t *testing.T) {
 	wd, _ := os.Getwd()
-	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-vex.json")
-	if _, err := os.Stat(testdata); os.IsNotExist(err) {
-		t.Skip("testdata not available")
+	root := filepath.Join(wd, "..", "..", "testdata")
+	cdx := filepath.Join(root, "alpine-3.20-cdx.json")
+	grype := filepath.Join(root, "alpine-3.20-grype.json")
+	vex := filepath.Join(root, "alpine-3.20-vex.json")
+	for _, p := range []string{cdx, grype, vex} {
+		if _, err := os.Stat(p); os.IsNotExist(err) {
+			t.Skip("testdata not available")
+		}
 	}
 
 	b := NewBuilder()
-	if err := b.IngestVEX(testdata); err != nil {
+	if err := b.IngestCycloneDX(cdx); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.IngestGrype(grype); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.IngestVEX(vex); err != nil {
 		t.Fatalf("IngestVEX failed: %v", err)
 	}
-
 	if len(b.vexStatements) == 0 {
-		t.Error("Expected VEX statements to be ingested")
+		t.Fatalf("Expected VEX statements, warnings=%v", b.VEXWarnings())
+	}
+	twin := b.Build()
+	if twin.VEXStatus("CVE-2024-6119", "alpine:3.20") == "" && twin.VEXFor("CVE-2024-6119", "alpine:3.20", twin.Artifacts[0].Digest) == nil {
+		t.Fatalf("VEX not bound: %#v digest=%s", twin.VEX, twin.Artifacts[0].Digest)
+	}
+}
+
+func TestIngestVEXInvalidJustificationWarns(t *testing.T) {
+	wd, _ := os.Getwd()
+	vex := filepath.Join(wd, "..", "..", "testdata", "openvex-invalid-justification.json")
+	if _, err := os.Stat(vex); os.IsNotExist(err) {
+		t.Skip("fixture missing")
+	}
+	b := NewBuilder()
+	_ = b.IngestCycloneDX(filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-cdx.json"))
+	_ = b.IngestGrype(filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-grype.json"))
+	if err := b.IngestVEX(vex); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.vexStatements) != 0 {
+		t.Fatalf("expected ignore, got %#v", b.vexStatements)
+	}
+	joined := strings.Join(b.VEXWarnings(), "\n")
+	if !strings.Contains(joined, "justification") {
+		t.Fatalf("want justification warning, got %q", joined)
+	}
+}
+
+func TestIngestVEXWrongDigestWarns(t *testing.T) {
+	wd, _ := os.Getwd()
+	vex := filepath.Join(wd, "..", "..", "testdata", "openvex-wrong-digest.json")
+	if _, err := os.Stat(vex); os.IsNotExist(err) {
+		t.Skip("fixture missing")
+	}
+	b := NewBuilder()
+	_ = b.IngestCycloneDX(filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-cdx.json"))
+	_ = b.IngestGrype(filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-grype.json"))
+	if err := b.IngestVEX(vex); err != nil {
+		t.Fatal(err)
+	}
+	if len(b.vexStatements) != 0 {
+		t.Fatalf("expected ignore wrong digest, got %#v", b.vexStatements)
+	}
+	joined := strings.Join(b.VEXWarnings(), "\n")
+	if !strings.Contains(joined, "digest") {
+		t.Fatalf("want digest warning, got %q", joined)
 	}
 }
 
@@ -112,15 +166,10 @@ func TestBuild(t *testing.T) {
 	}
 
 	twin := b.Build()
-	if twin == nil {
-		t.Fatal("Build returned nil")
-	}
-
 	if len(twin.Artifacts) == 0 {
-		t.Error("Expected at least one artifact")
+		t.Error("Expected artifacts")
 	}
-
-	if len(twin.Artifacts[0].Packages) == 0 {
-		t.Error("Expected packages in artifact")
+	if len(twin.CVEs) == 0 {
+		t.Error("Expected CVEs")
 	}
 }

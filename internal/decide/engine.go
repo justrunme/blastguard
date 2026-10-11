@@ -9,6 +9,8 @@ import (
 
 	"github.com/justrunme/blastguard/internal/config"
 	"github.com/justrunme/blastguard/internal/graph"
+	"github.com/justrunme/blastguard/internal/openvex"
+	"github.com/justrunme/blastguard/internal/runtime"
 	"github.com/justrunme/blastguard/internal/verify"
 )
 
@@ -52,6 +54,7 @@ type Signals struct {
 	ReachablePath   bool     `json:"reachable_path"`
 	CriticalService bool     `json:"critical_service"`
 	VEXNotAffected  bool     `json:"vex_not_affected"`
+	VEXStatus       string   `json:"vex_status,omitempty"`
 	AffectedArts    int      `json:"affected_artifacts"`
 	RunningWLs      int      `json:"running_workloads"`
 	ExposedWLs      int      `json:"exposed_workloads"`
@@ -60,6 +63,12 @@ type Signals struct {
 	SBOM            string   `json:"sbom"`
 	Provenance      string   `json:"provenance"`
 	FixImage        string   `json:"fix_image,omitempty"`
+
+	// Reachability triad — TRUE|FALSE|UNKNOWN. Missing evidence is UNKNOWN.
+	// ExecutionObserved never yields ALLOW by itself; observed != exploitable.
+	PackagePresent    string `json:"package_present"`
+	NetworkReachable  string `json:"network_reachable"`
+	ExecutionObserved string `json:"execution_observed"`
 }
 
 type Decision struct {
@@ -74,6 +83,8 @@ type TraceOptions struct {
 	Verifier           verify.Verifier
 	Demo               *config.Demo
 	VerifyAttestations bool
+	// RuntimeEvidence is optional Tetragon/Falco export (see runtime.Document).
+	RuntimeEvidence *runtime.Document
 }
 
 func LoadPolicy(path string) (*Policy, error) {
@@ -110,14 +121,19 @@ func matchString(want *string, have string) bool {
 }
 
 func (p *Policy) Evaluate(s Signals) Decision {
-	if s.AffectedArts == 0 && s.RunningWLs == 0 && !s.VEXNotAffected {
-		// No remaining blast radius — remediated or never present.
+	// under_investigation keeps WARN (never ALLOW via empty blast radius alone).
+	underInvest := strings.EqualFold(s.VEXStatus, openvex.StatusUnderInvestigation)
+
+	if s.AffectedArts == 0 && s.RunningWLs == 0 && !s.VEXNotAffected && !underInvest {
 		if s.CVE != "" && s.Package != "" {
 			return Decision{Action: "ALLOW", RuleID: "no-blast-radius", Reason: "no affected artifacts remain in the twin", Signals: s}
 		}
 	}
 	if s.VEXNotAffected && s.AffectedArts == 0 {
 		return Decision{Action: "ALLOW", RuleID: "vex-clear", Reason: "VEX asserts not_affected for this artifact", Signals: s}
+	}
+	if underInvest {
+		return Decision{Action: "WARN", RuleID: "vex-under-investigation", Reason: "VEX status under_investigation — keep WARN until resolved", Signals: s}
 	}
 	for _, r := range p.Rules {
 		w := r.When
@@ -167,19 +183,27 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 		return Signals{}, fmt.Errorf("unknown CVE %s", cveID)
 	}
 	s := Signals{
-		CVE:          cve.ID,
-		Package:      cve.Package,
-		Severity:     strings.ToUpper(strings.TrimSpace(cve.Severity)),
-		CVSS:         cve.CVSS,
-		EPSS:         cve.EPSS,
-		FixAvailable: cve.FixAvailable,
-		SBOM:         graph.StatusMissing,
-		Provenance:   graph.StatusMissing,
+		CVE:               cve.ID,
+		Package:           cve.Package,
+		Severity:          strings.ToUpper(strings.TrimSpace(cve.Severity)),
+		CVSS:              cve.CVSS,
+		EPSS:              cve.EPSS,
+		FixAvailable:      cve.FixAvailable,
+		SBOM:              graph.StatusMissing,
+		Provenance:        graph.StatusMissing,
+		PackagePresent:    runtime.Unknown,
+		NetworkReachable:  runtime.Unknown,
+		ExecutionObserved: runtime.ExecutionObserved(opts.RuntimeEvidence, workload, cve.Package),
 	}
 
 	var criticalPath []string
 	var sbomStatus, provStatus string
 	statusSet := false
+	pkgSeen := false
+	pkgPresent := false
+	netKnown := false
+	vexStatuses := map[string]bool{}
+
 	for i := range t.Artifacts {
 		a := &t.Artifacts[i]
 		if opts.VerifyAttestations {
@@ -195,8 +219,6 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 			a.Signature = graph.NormalizeStatus(a.Signature)
 		}
 
-		// Aggregate SBOM/provenance only for artifacts in the traced scope.
-		// Unrelated BindWorkloads stubs (coredns, etc.) must not force MISSING.
 		if artifactRelevantForStatus(t, a, cve, workload) {
 			if !statusSet {
 				sbomStatus = a.SBOM
@@ -206,13 +228,28 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 				sbomStatus = worstStatus(sbomStatus, a.SBOM)
 				provStatus = worstStatus(provStatus, a.Provenance)
 			}
+			if len(a.Packages) > 0 {
+				pkgSeen = true
+				for _, p := range a.Packages {
+					if p.Name == cve.Package {
+						pkgPresent = true
+						break
+					}
+				}
+			}
 		}
 
 		if !graph.TwinPackageAffected(t, a, cve) {
 			continue
 		}
-		if t.VEXStatus(cve.ID, a.Image) == "not_affected" {
+		if vex, suppress := vexEffect(t, a, cve); suppress {
+			if vex != nil {
+				vexStatuses[openvex.NormalizeStatus(vex.Status)] = true
+			}
 			continue
+		}
+		if vex := t.VEXForArtifact(cve.ID, a); vex != nil {
+			vexStatuses[openvex.NormalizeStatus(vex.Status)] = true
 		}
 		s.AffectedArts++
 		for _, w := range t.Workloads {
@@ -222,6 +259,7 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 			if !graph.ImagesMatch(w.Image, a.Image) {
 				continue
 			}
+			netKnown = true
 			if w.Running {
 				s.Running = true
 				s.RunningWLs++
@@ -258,7 +296,22 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 		s.Provenance = graph.StatusMissing
 	}
 
-	// VEX-only path: if every artifact is not_affected
+	if pkgSeen {
+		if pkgPresent {
+			s.PackagePresent = runtime.True
+		} else {
+			s.PackagePresent = runtime.False
+		}
+	}
+	if netKnown {
+		if s.ReachablePath {
+			s.NetworkReachable = runtime.True
+		} else {
+			s.NetworkReachable = runtime.False
+		}
+	}
+
+	// VEX-only path: if every package-affected artifact is suppressed as not_affected.
 	allVEX := true
 	anyArt := false
 	for i := range t.Artifacts {
@@ -267,18 +320,53 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 			continue
 		}
 		anyArt = true
-		if t.VEXStatus(cve.ID, a.Image) != "not_affected" {
+		vex, suppress := vexEffect(t, a, cve)
+		if !suppress || vex == nil || openvex.NormalizeStatus(vex.Status) != openvex.StatusNotAffected {
 			allVEX = false
 		}
 	}
 	if anyArt && allVEX {
 		s.VEXNotAffected = true
+		s.VEXStatus = openvex.StatusNotAffected
 		s.AffectedArts = 0
+	} else if vexStatuses[openvex.StatusUnderInvestigation] {
+		s.VEXStatus = openvex.StatusUnderInvestigation
+	} else if vexStatuses[openvex.StatusFixed] {
+		s.VEXStatus = openvex.StatusFixed
 	}
 
 	s.CriticalPath = criticalPath
 	s.FixImage = suggestFixImage(t, cve, opts.Demo)
 	return s, nil
+}
+
+// vexEffect returns the matching VEX row and whether it suppresses the artifact
+// from the blast-radius count.
+//
+// not_affected → suppress (justification/digest already validated at ingest).
+// fixed → suppress only when the artifact package version is outside the CVE range
+//
+//	(fixed version present / no longer affected).
+//
+// under_investigation → do not suppress (decision layer keeps WARN).
+func vexEffect(t *graph.Twin, a *graph.Artifact, cve *graph.CVE) (*graph.VEX, bool) {
+	v := t.VEXForArtifact(cve.ID, a)
+	if v == nil {
+		return nil, false
+	}
+	switch openvex.NormalizeStatus(v.Status) {
+	case openvex.StatusNotAffected:
+		return v, true
+	case openvex.StatusFixed:
+		// Require the artifact to no longer be package-affected (fixed version present).
+		if !graph.TwinPackageAffected(t, a, cve) {
+			return v, true
+		}
+		// Scanner still marks affected → fixed claim not evidenced; keep in radius.
+		return v, false
+	default:
+		return v, false
+	}
 }
 
 func suggestFixImage(t *graph.Twin, cve *graph.CVE, demo *config.Demo) string {
