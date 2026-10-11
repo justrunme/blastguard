@@ -2,23 +2,26 @@
 
 ## Unreleased
 
-### Fixed
-- OpenVEX digests require exact `sha256:`+64 hex; match by equality and product name (reject prefix digests)
-- `--vex-attestation` requires `--key` or certificate identity flags, decodes DSSE→in-toto→predicate, fails closed
-- Reachability triad wired into `Policy.Evaluate`; runtime evidence empty package no longer matches all; no Tetragon/Falco claim
-- Remediate marks proposed images without scan data as `UNKNOWN`; "safer" only when no new/worse CVEs
-- Reject OpenVEX when twin has no artifacts; validate `@context`/author/timestamp; reject unknown statuses
-- CI checks `WRONG_CODE` for prefix-digest VEX; cosign key attestation e2e; ingest tests use `t.Fatal` not `t.Skip`
+## [0.2.0] - 2026-10-11
 
-## Unreleased
+OpenVEX, reachability triad, and remediate since 0.1.0:
 
+### Added
 - OpenVEX ingest (file + optional OCI attestation via `cosign verify-attestation --type openvex`)
-- `not_affected` requires a valid OpenVEX justification and exact digest/image binding; otherwise ignored with warning
-- VEX feeds decisions: `not_affected` suppresses, `under_investigation` keeps WARN, `fixed` requires fixed version present
+- VEX decisions: `not_affected` suppresses (valid justification + exact digest/image binding); `under_investigation` keeps WARN; `fixed` requires fixed version present
 - Reachability triad signals: `package_present`, `network_reachable`, `execution_observed` (UNKNOWN without runtime evidence)
 - `blastguard remediate --image <new>` impact report (markdown + JSON)
+- Real vuln matching, selector exposure, and CI exit codes
 - Kind e2e: matching-digest VEX flips BLOCK→ALLOW; wrong digest stays BLOCK
+- EVIDENCE.md claim/status standard
 
+### Fixed
+- OpenVEX digests require exact `sha256:`+64 hex; match by equality and product name (reject prefix digests)
+- `--vex-attestation` requires `--key` or certificate identity flags; decodes DSSE→in-toto→predicate; fails closed
+- Reachability triad wired into `Policy.Evaluate`; empty runtime evidence package no longer matches all
+- Remediate marks proposed images without scan data as `UNKNOWN`; "safer" only when no new/worse CVEs
+- Reject OpenVEX when twin has no artifacts; validate `@context`/author/timestamp; reject unknown statuses
+- ArtifactByDigest exact equality via `NormalizeImageDigest`
 
 ## 0.1.0 — 2026-09-06
 
