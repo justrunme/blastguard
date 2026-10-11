@@ -198,4 +198,15 @@ func TestBuild(t *testing.T) {
 	if len(twin.CVEs) == 0 {
 		t.Error("Expected CVEs")
 	}
+	if !twin.InventoryComplete {
+		t.Error("SBOM-backed ingest with no running workloads must set inventory_complete")
+	}
+}
+
+func TestBuildEmptyInventoryIncomplete(t *testing.T) {
+	// Negative: empty builder must not claim a complete inventory.
+	twin := NewBuilder().Build()
+	if twin.InventoryComplete {
+		t.Fatal("empty ingest twin must be inventory_complete=false")
+	}
 }

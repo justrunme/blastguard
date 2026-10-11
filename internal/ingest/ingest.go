@@ -465,7 +465,7 @@ func (b *Builder) Build() *graph.Twin {
 		sbomStatus = graph.StatusVerified
 	}
 
-	return &graph.Twin{
+	twin := &graph.Twin{
 		CVEs: cves,
 		Artifacts: []graph.Artifact{
 			{
@@ -481,6 +481,8 @@ func (b *Builder) Build() *graph.Twin {
 		VEX:       b.vexStatements,
 		Matches:   b.matches,
 	}
+	twin.RefreshInventoryComplete()
+	return twin
 }
 
 func imageRefFromComponent(name, version string) string {

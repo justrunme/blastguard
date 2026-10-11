@@ -205,11 +205,99 @@ func TestExitCode(t *testing.T) {
 	if decide.ExitCode("WARN", true) != 1 {
 		t.Fatal()
 	}
+	if decide.ExitCode("UNKNOWN", false) != 1 {
+		t.Fatal("UNKNOWN must be non-zero")
+	}
 	if decide.ExitCode("BLOCK", false) != 2 {
 		t.Fatal()
 	}
 	if decide.ExitCode("QUARANTINE", true) != 2 {
 		t.Fatal()
+	}
+}
+
+func TestEmptyTwinCVENotAllow(t *testing.T) {
+	pol, err := decide.LoadPolicy(filepath.Join("..", "..", "config", "decision-policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Negative: empty/incomplete inventory must not fail-open to ALLOW.
+	twin := &graph.Twin{
+		CVEs: []graph.CVE{{
+			ID: "CVE-EMPTY", Package: "zlib", Severity: "HIGH",
+			VersionRange: "<= 1.3.2",
+		}},
+		InventoryComplete: false,
+	}
+	s, err := decide.TraceCVE(twin, "CVE-EMPTY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.InventoryComplete {
+		t.Fatal("empty twin must report inventory_complete=false")
+	}
+	d := pol.Evaluate(s)
+	if d.Action == "ALLOW" {
+		t.Fatalf("empty twin + CVE must not ALLOW, got %s (%s)", d.Action, d.RuleID)
+	}
+	if d.Action != "UNKNOWN" || d.RuleID != "incomplete-inventory" {
+		t.Fatalf("want UNKNOWN/incomplete-inventory, got %s/%s (%s)", d.Action, d.RuleID, d.Reason)
+	}
+	if decide.ExitCode(d.Action, false) == 0 {
+		t.Fatal("UNKNOWN must yield non-zero exit")
+	}
+}
+
+func TestCompleteTwinPackageAbsentAllow(t *testing.T) {
+	pol, err := decide.LoadPolicy(filepath.Join("..", "..", "config", "decision-policy.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	twin := &graph.Twin{
+		InventoryComplete: true,
+		CVEs: []graph.CVE{{
+			ID: "CVE-ABSENT", Package: "zlib", Severity: "HIGH",
+			VersionRange: "<= 1.3.2",
+		}},
+		Artifacts: []graph.Artifact{{
+			Image:      "app:1",
+			Packages:   []graph.Pkg{{Name: "openssl", Version: "3.0.0"}},
+			SBOM:       graph.StatusVerified,
+			Provenance: graph.StatusVerified,
+		}},
+	}
+	s, err := decide.TraceCVE(twin, "CVE-ABSENT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.AffectedArts != 0 || s.RunningWLs != 0 {
+		t.Fatalf("want zero blast radius for absent package, got arts=%d wls=%d", s.AffectedArts, s.RunningWLs)
+	}
+	if !s.InventoryComplete {
+		t.Fatal("complete twin must keep inventory_complete=true")
+	}
+	d := pol.Evaluate(s)
+	if d.Action != "ALLOW" || d.RuleID != "no-blast-radius" {
+		t.Fatalf("complete twin without package: want ALLOW/no-blast-radius, got %s/%s", d.Action, d.RuleID)
+	}
+}
+
+func TestDogfoodGateReject(t *testing.T) {
+	// Negative: BLOCK must fail the release dogfood gate (no masking).
+	if !decide.DogfoodGateReject(decide.Decision{Action: "BLOCK"}) {
+		t.Fatal("BLOCK must reject dogfood gate")
+	}
+	if !decide.DogfoodGateReject(decide.Decision{Action: "QUARANTINE"}) {
+		t.Fatal("QUARANTINE must reject dogfood gate")
+	}
+	if !decide.DogfoodGateReject(decide.Decision{Action: "UNKNOWN"}) {
+		t.Fatal("UNKNOWN must reject dogfood gate")
+	}
+	if decide.DogfoodGateReject(decide.Decision{Action: "ALLOW", RuleID: "vex-clear"}) {
+		t.Fatal("VEX-covered ALLOW must pass dogfood gate")
+	}
+	if decide.DogfoodGateReject(decide.Decision{Action: "WARN"}) {
+		t.Fatal("WARN must pass dogfood gate")
 	}
 }
 

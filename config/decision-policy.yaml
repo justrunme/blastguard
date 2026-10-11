@@ -63,3 +63,4 @@ actions:
   - QUARANTINE
   - WARN
   - ALLOW
+  - UNKNOWN

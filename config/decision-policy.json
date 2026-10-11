@@ -62,5 +62,5 @@
     "LOW": 1,
     "UNKNOWN": 0
   },
-  "actions": ["BLOCK", "QUARANTINE", "WARN", "ALLOW"]
+  "actions": ["BLOCK", "QUARANTINE", "WARN", "ALLOW", "UNKNOWN"]
 }

@@ -26,8 +26,8 @@ func TestBindWorkloadsNoCloneAcrossTags(t *testing.T) {
 		}},
 	}
 	twin.BindWorkloads([]Workload{
-		{Name: "a", Namespace: "default", Image: "nginx:1.25"},
-		{Name: "b", Namespace: "default", Image: "nginx:1.27"},
+		{Name: "a", Namespace: "default", Image: "nginx:1.25", Running: true},
+		{Name: "b", Namespace: "default", Image: "nginx:1.27", Running: true},
 	})
 	var got125, got127 *Artifact
 	for i := range twin.Artifacts {
@@ -50,6 +50,34 @@ func TestBindWorkloadsNoCloneAcrossTags(t *testing.T) {
 	}
 	if got127.SBOM != StatusMissing {
 		t.Fatalf("stub SBOM want MISSING got %s", got127.SBOM)
+	}
+	// Negative: stub running workload without SBOM must not mark inventory complete.
+	if twin.InventoryComplete {
+		t.Fatal("inventory must be incomplete when a running workload has only a stub SBOM")
+	}
+}
+
+func TestInventoryCompleteWhenAllRunningHaveSBOM(t *testing.T) {
+	twin := &Twin{
+		Artifacts: []Artifact{{
+			Image:    "nginx:alpine",
+			Packages: []Pkg{{Name: "zlib", Version: "1.2.0"}},
+			SBOM:     StatusVerified,
+		}},
+	}
+	twin.BindWorkloads([]Workload{
+		{Name: "payment-api", Namespace: "default", Image: "nginx:alpine", Running: true},
+	})
+	if !twin.InventoryComplete {
+		t.Fatal("want inventory_complete when every running workload has SBOM packages")
+	}
+}
+
+func TestEmptyTwinInventoryIncomplete(t *testing.T) {
+	twin := &Twin{}
+	twin.RefreshInventoryComplete()
+	if twin.InventoryComplete {
+		t.Fatal("empty twin must be inventory_complete=false")
 	}
 }
 
