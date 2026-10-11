@@ -58,7 +58,6 @@ func TestIngestGrype(t *testing.T) {
 	}
 }
 
-
 func TestIngestGrypeFileSourceTarget(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "grype-file.json")
