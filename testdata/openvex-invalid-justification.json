@@ -1,0 +1,17 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://example.com/vex/invalid-justification",
+  "author": "blastguard-test",
+  "timestamp": "2026-10-11T00:00:00Z",
+  "version": "1",
+  "statements": [
+    {
+      "vulnerability": { "name": "CVE-2024-6119" },
+      "products": [
+        { "@id": "pkg:oci/alpine@sha256:bf8527eb54c3680e728d5b4b383a8ba730d72dae7236fbc8dff97ed6b224a731" }
+      ],
+      "status": "not_affected",
+      "justification": "because we say so"
+    }
+  ]
+}

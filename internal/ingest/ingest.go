@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/justrunme/blastguard/internal/graph"
+	"github.com/justrunme/blastguard/internal/openvex"
 )
 
 type CycloneDXComponent struct {
@@ -148,6 +149,7 @@ type Builder struct {
 	cves          map[string]*graph.CVE
 	matches       []graph.Match
 	vexStatements []graph.VEX
+	vexWarnings   []string
 	imageRef      string
 	imageDigest   string
 }
@@ -347,26 +349,67 @@ func (b *Builder) IngestOSV(path string) error {
 	return nil
 }
 
+// IngestVEX parses an OpenVEX document. Statements are validated against
+// currently known builder artifacts (image ref/digest). Prefer ApplyOpenVEX
+// on a built twin after --from-cluster so digests from the cluster are visible.
 func (b *Builder) IngestVEX(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	var vex VEX
-	if err := json.Unmarshal(data, &vex); err != nil {
+	doc, err := openvex.ParseDocument(data)
+	if err != nil {
 		return err
 	}
-	for _, stmt := range vex.Statements {
-		for _, prod := range stmt.Products {
-			b.vexStatements = append(b.vexStatements, graph.VEX{
-				CVE:           stmt.Vulnerability.Name,
-				Image:         prod.ID,
-				Status:        stmt.Status,
-				Justification: stmt.Justification,
-			})
-		}
+	arts := []graph.Artifact{{
+		Image:  b.imageRef,
+		Digest: b.imageDigest,
+	}}
+	acc, warns := openvex.EvaluateStatements(doc, arts)
+	for _, w := range warns {
+		b.vexWarnings = append(b.vexWarnings, formatVEXWarning(w))
 	}
+	b.vexStatements = append(b.vexStatements, openvex.ToGraphVEX(acc)...)
 	return nil
+}
+
+// VEXWarnings returns non-fatal OpenVEX ingest warnings.
+func (b *Builder) VEXWarnings() []string {
+	return append([]string(nil), b.vexWarnings...)
+}
+
+// ApplyOpenVEX evaluates an OpenVEX file against an existing twin's artifacts
+// (after cluster bind) and appends accepted statements.
+func ApplyOpenVEX(t *graph.Twin, path string) (warnings []string, err error) {
+	if t == nil {
+		return nil, fmt.Errorf("ApplyOpenVEX: nil twin")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return ApplyOpenVEXBytes(t, data)
+}
+
+// ApplyOpenVEXBytes is ApplyOpenVEX for in-memory documents.
+func ApplyOpenVEXBytes(t *graph.Twin, data []byte) (warnings []string, err error) {
+	doc, err := openvex.ParseDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	acc, warns := openvex.EvaluateStatements(doc, t.Artifacts)
+	for _, w := range warns {
+		warnings = append(warnings, formatVEXWarning(w))
+	}
+	t.VEX = append(t.VEX, openvex.ToGraphVEX(acc)...)
+	return warnings, nil
+}
+
+func formatVEXWarning(w openvex.Warning) string {
+	if w.CVE == "" && w.Product == "" {
+		return "openvex: " + w.Reason
+	}
+	return fmt.Sprintf("openvex: cve=%s product=%s: %s", w.CVE, w.Product, w.Reason)
 }
 
 func (b *Builder) Build() *graph.Twin {
