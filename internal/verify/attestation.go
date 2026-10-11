@@ -132,7 +132,7 @@ func (v *CosignVerifier) Verify(ctx context.Context, image string) Result {
 	defer cancel()
 
 	trust, trustErr := v.trustArgs()
-	base := []string{}
+	var base []string
 	if trustErr == nil {
 		base = trust
 	} else {

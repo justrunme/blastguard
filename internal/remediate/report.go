@@ -33,12 +33,12 @@ type Report struct {
 
 // WorkloadDelta describes how a live workload's CVE set changes.
 type WorkloadDelta struct {
-	Name      string   `json:"name"`
-	Namespace string   `json:"namespace"`
-	Image     string   `json:"image"`
-	Before    []string `json:"cves_before"`
-	After     []string `json:"cves_after"`
-	Resolved  []string `json:"resolved"`
+	Name       string   `json:"name"`
+	Namespace  string   `json:"namespace"`
+	Image      string   `json:"image"`
+	Before     []string `json:"cves_before"`
+	After      []string `json:"cves_after"`
+	Resolved   []string `json:"resolved"`
 	Introduced []string `json:"introduced,omitempty"`
 }
 
