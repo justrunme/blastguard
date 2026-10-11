@@ -221,32 +221,78 @@ func (t *Twin) VEXForArtifact(cve string, a *Artifact) *VEX {
 }
 
 // VEXFor finds a statement for cve bound to image and/or digest.
-// Digest match wins; otherwise exact image ref (including tag) is required.
+// Digest match is exact equality on a full sha256:<64 hex> only (no substring /
+// suffix). When the VEX product carries a name, the artifact image name must
+// also match so pkg:oci/whatever@sha256:… cannot suppress nginx@sha256:….
 // Loose repository-name matches are rejected so not_affected cannot leap across tags.
 func (t *Twin) VEXFor(cve, image, digest string) *VEX {
 	cve = strings.TrimSpace(cve)
 	image = strings.TrimSpace(image)
-	digest = strings.TrimSpace(digest)
+	digest = strings.ToLower(strings.TrimSpace(digest))
 	for i := range t.VEX {
 		v := &t.VEX[i]
 		if v.CVE != cve {
 			continue
 		}
 		if v.Digest != "" {
-			if digest != "" && strings.EqualFold(v.Digest, digest) {
-				return v
+			vd := strings.ToLower(strings.TrimSpace(v.Digest))
+			if len(vd) != 7+64 || !strings.HasPrefix(vd, "sha256:") {
+				continue
 			}
-			if image != "" && (strings.Contains(strings.ToLower(image), strings.ToLower(v.Digest)) ||
-				strings.EqualFold(v.Digest, digest)) {
-				return v
+			if digest == "" || vd != digest {
+				continue
 			}
-			continue
+			if !vexProductNameMatches(v, image) {
+				continue
+			}
+			return v
 		}
 		if image != "" && (v.Image == image || v.Product == image) {
 			return v
 		}
 	}
 	return nil
+}
+
+func vexProductNameMatches(v *VEX, image string) bool {
+	if v == nil || image == "" {
+		return true
+	}
+	// Extract name from product purl or image ref stored on the VEX row.
+	name := ""
+	raw := v.Product
+	if raw == "" {
+		raw = v.Image
+	}
+	if strings.HasPrefix(raw, "pkg:") {
+		rest := raw
+		if i := strings.Index(rest, "/"); i >= 0 {
+			rest = rest[i+1:]
+		}
+		name = rest
+		if i := strings.Index(name, "@"); i >= 0 {
+			name = name[:i]
+		}
+		if i := strings.Index(name, "?"); i >= 0 {
+			name = name[:i]
+		}
+	} else {
+		name = ImageName(raw)
+	}
+	if name == "" {
+		return true
+	}
+	an := ImageName(image)
+	if strings.EqualFold(an, name) {
+		return true
+	}
+	base := func(s string) string {
+		if i := strings.LastIndex(s, "/"); i >= 0 {
+			return s[i+1:]
+		}
+		return s
+	}
+	return strings.EqualFold(base(an), base(name))
 }
 
 // PackageAffected reports whether artifact a is affected by cve.

@@ -22,7 +22,8 @@ const (
 	Unknown = "UNKNOWN"
 )
 
-// Document is the on-disk format for Tetragon/Falco (or manual) exports.
+// Document is the on-disk format for manual runtime evidence exports.
+// No Tetragon/Falco adapter is shipped; supply a file matching this schema.
 //
 // Example:
 //
@@ -85,26 +86,28 @@ func Parse(data []byte) (*Document, error) {
 }
 
 // ExecutionObserved returns TRUE/FALSE/UNKNOWN for a workload+package scope.
-// Without a document, the result is always UNKNOWN.
+// Without a document or without a matching row, the result is always UNKNOWN.
+// An observation with an empty package must not match a specific package query.
 func ExecutionObserved(doc *Document, workload, pkg string) string {
 	if doc == nil || len(doc.Observations) == 0 {
 		return Unknown
 	}
 	workload = strings.TrimSpace(workload)
 	pkg = strings.TrimSpace(pkg)
-	sawScope := false
 	for _, o := range doc.Observations {
-		if workload != "" && o.Workload != "" && o.Workload != workload {
-			continue
+		if workload != "" {
+			if o.Workload == "" || o.Workload != workload {
+				continue
+			}
 		}
-		sawScope = true
-		if pkg == "" || o.Package == "" || o.Package == pkg {
-			return True
+		if pkg != "" {
+			// Empty observation package must not match everything.
+			if o.Package == "" || o.Package != pkg {
+				continue
+			}
 		}
+		return True
 	}
-	if sawScope {
-		return False
-	}
-	// Evidence file present but no row for this workload → UNKNOWN (not FALSE).
+	// No matching row → UNKNOWN (never invent FALSE from absence).
 	return Unknown
 }

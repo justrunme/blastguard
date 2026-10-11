@@ -26,3 +26,27 @@ func TestExecutionObservedTrue(t *testing.T) {
 		t.Fatalf("other workload want UNKNOWN got %s", got)
 	}
 }
+
+func TestExecutionObservedNoMatchingRowIsUnknown(t *testing.T) {
+	doc := &runtime.Document{
+		Format: runtime.FormatV1,
+		Observations: []runtime.Observation{{
+			Workload: "api", Package: "curl",
+		}},
+	}
+	if got := runtime.ExecutionObserved(doc, "api", "openssl"); got != runtime.Unknown {
+		t.Fatalf("no matching package row want UNKNOWN got %s", got)
+	}
+}
+
+func TestExecutionObservedEmptyPackageDoesNotMatchAll(t *testing.T) {
+	doc := &runtime.Document{
+		Format: runtime.FormatV1,
+		Observations: []runtime.Observation{{
+			Workload: "api", Package: "",
+		}},
+	}
+	if got := runtime.ExecutionObserved(doc, "api", "openssl"); got != runtime.Unknown {
+		t.Fatalf("empty observation package must not match openssl, got %s", got)
+	}
+}

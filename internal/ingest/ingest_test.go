@@ -11,7 +11,7 @@ func TestIngestCycloneDX(t *testing.T) {
 	wd, _ := os.Getwd()
 	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-cdx.json")
 	if _, err := os.Stat(testdata); os.IsNotExist(err) {
-		t.Skip("testdata not available")
+		t.Fatal("testdata not available")
 	}
 
 	b := NewBuilder()
@@ -28,7 +28,7 @@ func TestIngestSPDX(t *testing.T) {
 	wd, _ := os.Getwd()
 	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-spdx.json")
 	if _, err := os.Stat(testdata); os.IsNotExist(err) {
-		t.Skip("testdata not available")
+		t.Fatal("testdata not available")
 	}
 
 	b := NewBuilder()
@@ -45,7 +45,7 @@ func TestIngestGrype(t *testing.T) {
 	wd, _ := os.Getwd()
 	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-grype.json")
 	if _, err := os.Stat(testdata); os.IsNotExist(err) {
-		t.Skip("testdata not available")
+		t.Fatal("testdata not available")
 	}
 
 	b := NewBuilder()
@@ -62,7 +62,7 @@ func TestIngestOSV(t *testing.T) {
 	wd, _ := os.Getwd()
 	testdata := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-osv.json")
 	if _, err := os.Stat(testdata); os.IsNotExist(err) {
-		t.Skip("testdata not available")
+		t.Fatal("testdata not available")
 	}
 
 	b := NewBuilder()
@@ -83,7 +83,7 @@ func TestIngestVEX(t *testing.T) {
 	vex := filepath.Join(root, "alpine-3.20-vex.json")
 	for _, p := range []string{cdx, grype, vex} {
 		if _, err := os.Stat(p); os.IsNotExist(err) {
-			t.Skip("testdata not available")
+			t.Fatal("testdata not available")
 		}
 	}
 
@@ -110,7 +110,7 @@ func TestIngestVEXInvalidJustificationWarns(t *testing.T) {
 	wd, _ := os.Getwd()
 	vex := filepath.Join(wd, "..", "..", "testdata", "openvex-invalid-justification.json")
 	if _, err := os.Stat(vex); os.IsNotExist(err) {
-		t.Skip("fixture missing")
+		t.Fatal("fixture missing")
 	}
 	b := NewBuilder()
 	_ = b.IngestCycloneDX(filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-cdx.json"))
@@ -131,7 +131,7 @@ func TestIngestVEXWrongDigestWarns(t *testing.T) {
 	wd, _ := os.Getwd()
 	vex := filepath.Join(wd, "..", "..", "testdata", "openvex-wrong-digest.json")
 	if _, err := os.Stat(vex); os.IsNotExist(err) {
-		t.Skip("fixture missing")
+		t.Fatal("fixture missing")
 	}
 	b := NewBuilder()
 	_ = b.IngestCycloneDX(filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-cdx.json"))
@@ -154,7 +154,7 @@ func TestBuild(t *testing.T) {
 	grypePath := filepath.Join(wd, "..", "..", "testdata", "alpine-3.20-grype.json")
 
 	if _, err := os.Stat(cdxPath); os.IsNotExist(err) {
-		t.Skip("testdata not available")
+		t.Fatal("testdata not available")
 	}
 
 	b := NewBuilder()

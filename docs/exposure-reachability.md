@@ -34,7 +34,15 @@ Each decision carries three independent fields with vocabulary `TRUE` | `FALSE` 
 | `network_reachable` | Workload has a reachable ingress path (`ReachablePath`) |
 | `execution_observed` | Optional runtime evidence file recorded a related exec/load |
 
-Missing runtime evidence is always `UNKNOWN`. **Observed execution is not exploitability** — `execution_observed=TRUE` never yields `ALLOW` by itself. See `internal/runtime` for the on-disk format (`blastguard.runtime_evidence/v1`).
+Missing runtime evidence is always `UNKNOWN`. **Observed execution is not exploitability**.
+
+The triad is evaluated in `Policy.Evaluate` (not display-only):
+
+- `execution_observed=TRUE` together with `network_reachable=TRUE` can escalate (WARN → QUARANTINE).
+- `execution_observed=FALSE` never yields `ALLOW` alone.
+- `UNKNOWN` does not change the candidate action.
+
+No Tetragon/Falco adapter is shipped; supply `blastguard.runtime_evidence/v1` manually (see `internal/runtime`). An empty `package` on an observation does not match every package query; no matching row yields `UNKNOWN`, not `FALSE`.
 
 ## Criticality
 
