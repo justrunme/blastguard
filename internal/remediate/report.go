@@ -11,13 +11,13 @@ import (
 
 // Report is the remediation impact output (JSON + markdown).
 type Report struct {
-	CurrentImage  string           `json:"current_image,omitempty"`
-	ProposedImage string           `json:"proposed_image"`
-	SaferWorkloads []WorkloadDelta `json:"safer_workloads"`
+	CurrentImage       string          `json:"current_image,omitempty"`
+	ProposedImage      string          `json:"proposed_image"`
+	SaferWorkloads     []WorkloadDelta `json:"safer_workloads"`
 	UnchangedWorkloads []WorkloadDelta `json:"unchanged_workloads"`
-	ResolvedCVEs  []string         `json:"resolved_cves"`
-	RemainingCVEs []CVERemain      `json:"remaining_cves"`
-	RequiredChanges []string       `json:"required_changes"`
+	ResolvedCVEs       []string        `json:"resolved_cves"`
+	RemainingCVEs      []CVERemain     `json:"remaining_cves"`
+	RequiredChanges    []string        `json:"required_changes"`
 }
 
 // WorkloadDelta describes how a live workload's CVE set changes.

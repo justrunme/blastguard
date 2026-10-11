@@ -42,9 +42,9 @@ const (
 //	  ]
 //	}
 type Document struct {
-	Format       string         `json:"format"`
-	Source       string         `json:"source"`
-	Observations []Observation  `json:"observations"`
+	Format       string        `json:"format"`
+	Source       string        `json:"source"`
+	Observations []Observation `json:"observations"`
 }
 
 // Observation is one runtime sighting. No synthetic/fake rows should be shipped

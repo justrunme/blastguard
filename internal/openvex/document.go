@@ -36,11 +36,11 @@ type Document struct {
 
 // Statement is one OpenVEX statement.
 type Statement struct {
-	Vulnerability Vulnerability `json:"vulnerability"`
-	Products      []Product     `json:"products"`
-	Status        string        `json:"status"`
-	Justification string        `json:"justification"`
-	ActionStatement string      `json:"action_statement,omitempty"`
+	Vulnerability   Vulnerability `json:"vulnerability"`
+	Products        []Product     `json:"products"`
+	Status          string        `json:"status"`
+	Justification   string        `json:"justification"`
+	ActionStatement string        `json:"action_statement,omitempty"`
 }
 
 // Vulnerability identifies the CVE (or other vuln id).
