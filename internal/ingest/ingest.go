@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -81,13 +82,42 @@ type GrypeMatch struct {
 	} `json:"artifact"`
 }
 
+// grypeSourceTarget accepts both Grype image scans (object with userInput/imageID)
+// and file/directory scans (plain string path), which newer Grype emits for tarballs.
+type grypeSourceTarget struct {
+	UserInput string
+	ImageID   string
+}
+
+func (t *grypeSourceTarget) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || string(data) == "null" {
+		return nil
+	}
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		t.UserInput = s
+		return nil
+	}
+	var obj struct {
+		UserInput string `json:"userInput"`
+		ImageID   string `json:"imageID"`
+	}
+	if err := json.Unmarshal(data, &obj); err != nil {
+		return err
+	}
+	t.UserInput = obj.UserInput
+	t.ImageID = obj.ImageID
+	return nil
+}
+
 type Grype struct {
 	Matches []GrypeMatch `json:"matches"`
 	Source  *struct {
-		Target *struct {
-			UserInput string `json:"userInput"`
-			ImageID   string `json:"imageID"`
-		} `json:"target"`
+		Target *grypeSourceTarget `json:"target"`
 	} `json:"source"`
 }
 
