@@ -46,28 +46,48 @@ type SPDX struct {
 
 type GrypeMatch struct {
 	Vulnerability struct {
-		ID       string `json:"id"`
-		Severity string `json:"severity"`
-		Cvss     []struct {
+		ID          string `json:"id"`
+		Severity    string `json:"severity"`
+		Description string `json:"description"`
+		Cvss        []struct {
 			Metrics struct {
 				BaseScore float64 `json:"baseScore"`
 			} `json:"metrics"`
 		} `json:"cvss"`
+		Fix struct {
+			Versions []string `json:"versions"`
+			State    string   `json:"state"`
+		} `json:"fix"`
+		// Legacy / alternate field some exporters use.
 		FixVersions []string `json:"fixVersions"`
-		Description string   `json:"description"`
 	} `json:"vulnerability"`
 	RelatedVulnerabilities []struct {
 		ID       string `json:"id"`
 		Severity string `json:"severity"`
 	} `json:"relatedVulnerabilities"`
+	MatchDetails []struct {
+		Type    string `json:"type"`
+		Matcher string `json:"matcher"`
+		Found   struct {
+			VersionConstraint string `json:"versionConstraint"`
+		} `json:"found"`
+	} `json:"matchDetails"`
 	Artifact struct {
 		Name    string `json:"name"`
 		Version string `json:"version"`
+		Type    string `json:"type"`
+		Purl    string `json:"purl"`
 	} `json:"artifact"`
 }
 
 type Grype struct {
 	Matches []GrypeMatch `json:"matches"`
+	Source  *struct {
+		Target *struct {
+			UserInput string `json:"userInput"`
+			ImageID   string `json:"imageID"`
+		} `json:"target"`
+	} `json:"source"`
 }
 
 type OSVPackage struct {
@@ -82,7 +102,21 @@ type OSVVulnerability struct {
 		Type  string `json:"type"`
 		Score string `json:"score"`
 	} `json:"severity"`
-	Summary string `json:"summary"`
+	Summary  string `json:"summary"`
+	Affected []struct {
+		Package struct {
+			Name      string `json:"name"`
+			Ecosystem string `json:"ecosystem"`
+		} `json:"package"`
+		Ranges []struct {
+			Type   string `json:"type"`
+			Events []struct {
+				Introduced   string `json:"introduced"`
+				Fixed        string `json:"fixed"`
+				LastAffected string `json:"last_affected"`
+			} `json:"events"`
+		} `json:"ranges"`
+	} `json:"affected"`
 }
 
 type OSVResult struct {
@@ -112,8 +146,10 @@ type VEX struct {
 type Builder struct {
 	packages      map[string]graph.Pkg
 	cves          map[string]*graph.CVE
+	matches       []graph.Match
 	vexStatements []graph.VEX
 	imageRef      string
+	imageDigest   string
 }
 
 func NewBuilder() *Builder {
@@ -139,9 +175,11 @@ func (b *Builder) IngestCycloneDX(path string) error {
 		if comp.Name == "" || comp.Type == "file" || comp.Type == "operating-system" {
 			continue
 		}
+		eco := ecosystemFromPURL(comp.Purl)
 		b.packages[comp.Name] = graph.Pkg{
-			Name:    comp.Name,
-			Version: comp.Version,
+			Name:      comp.Name,
+			Version:   comp.Version,
+			Ecosystem: eco,
 		}
 	}
 	return nil
@@ -158,9 +196,17 @@ func (b *Builder) IngestSPDX(path string) error {
 	}
 	for _, pkg := range spdx.Packages {
 		if pkg.Name != "" && pkg.VersionInfo != "" {
+			eco := ""
+			for _, ref := range pkg.ExternalRefs {
+				if strings.Contains(strings.ToLower(ref.ReferenceType), "purl") {
+					eco = ecosystemFromPURL(ref.ReferenceLocator)
+					break
+				}
+			}
 			b.packages[pkg.Name] = graph.Pkg{
-				Name:    pkg.Name,
-				Version: pkg.VersionInfo,
+				Name:      pkg.Name,
+				Version:   pkg.VersionInfo,
+				Ecosystem: eco,
 			}
 		}
 	}
@@ -176,12 +222,27 @@ func (b *Builder) IngestGrype(path string) error {
 	if err := json.Unmarshal(data, &grype); err != nil {
 		return err
 	}
+	if grype.Source != nil && grype.Source.Target != nil {
+		if grype.Source.Target.UserInput != "" && b.imageRef == "" {
+			b.imageRef = grype.Source.Target.UserInput
+		}
+		if grype.Source.Target.ImageID != "" {
+			b.imageDigest = grype.Source.Target.ImageID
+		}
+	}
 	for _, match := range grype.Matches {
 		vuln := match.Vulnerability
 		if vuln.ID == "" {
 			continue
 		}
-		if _, exists := b.cves[vuln.ID]; !exists {
+		fixVersions := vuln.Fix.Versions
+		if len(fixVersions) == 0 {
+			fixVersions = vuln.FixVersions
+		}
+		eco := ecosystemFromGrype(match.Artifact.Type, match.Artifact.Purl)
+		rangeExpr := constraintFromGrype(match, fixVersions)
+
+		if existing, exists := b.cves[vuln.ID]; !exists {
 			cvss := 0.0
 			if len(vuln.Cvss) > 0 {
 				cvss = vuln.Cvss[0].Metrics.BaseScore
@@ -189,12 +250,33 @@ func (b *Builder) IngestGrype(path string) error {
 			b.cves[vuln.ID] = &graph.CVE{
 				ID:           vuln.ID,
 				Package:      match.Artifact.Name,
-				VersionRange: "< " + strings.Join(vuln.FixVersions, ", "),
+				VersionRange: rangeExpr,
 				Severity:     normalizeSeverity(vuln.Severity),
 				CVSS:         cvss,
 				EPSS:         0.0,
-				FixAvailable: len(vuln.FixVersions) > 0,
+				FixAvailable: len(fixVersions) > 0 || strings.EqualFold(vuln.Fix.State, "fixed"),
 				Description:  vuln.Description,
+				Ecosystem:    eco,
+			}
+		} else if existing.VersionRange == "" && rangeExpr != "" {
+			existing.VersionRange = rangeExpr
+		}
+
+		// Scanner already matched this package version — record authoritative edge.
+		b.matches = append(b.matches, graph.Match{
+			CVE:       vuln.ID,
+			Package:   match.Artifact.Name,
+			Version:   match.Artifact.Version,
+			Image:     b.imageRef,
+			Ecosystem: eco,
+		})
+		if match.Artifact.Name != "" && match.Artifact.Version != "" {
+			if _, ok := b.packages[match.Artifact.Name]; !ok {
+				b.packages[match.Artifact.Name] = graph.Pkg{
+					Name:      match.Artifact.Name,
+					Version:   match.Artifact.Version,
+					Ecosystem: eco,
+				}
 			}
 		}
 	}
@@ -211,23 +293,32 @@ func (b *Builder) IngestOSV(path string) error {
 		return err
 	}
 	for _, result := range osv.Results {
+		eco := graph.InferEcosystem(result.Package.Name, result.Package.Ecosystem)
 		for _, vuln := range result.Vulnerabilities {
 			if vuln.ID == "" {
 				continue
 			}
+			rangeExpr := osvRangeExpression(vuln)
 			if _, exists := b.cves[vuln.ID]; !exists {
 				cvss := 0.0
 				severity := "UNKNOWN"
 				for _, sev := range vuln.Severity {
 					if sev.Type == "CVSS_V3" {
 						_, _ = fmt.Sscanf(sev.Score, "CVSS:3.%*d/%*s/%f", &cvss)
+						// Also accept score suffix like ".../8.3"
+						if cvss == 0 {
+							parts := strings.Split(sev.Score, "/")
+							if len(parts) > 0 {
+								_, _ = fmt.Sscanf(parts[len(parts)-1], "%f", &cvss)
+							}
+						}
 						if cvss >= 9.0 {
 							severity = "CRITICAL"
 						} else if cvss >= 7.0 {
 							severity = "HIGH"
 						} else if cvss >= 4.0 {
 							severity = "MEDIUM"
-						} else {
+						} else if cvss > 0 {
 							severity = "LOW"
 						}
 					}
@@ -235,14 +326,22 @@ func (b *Builder) IngestOSV(path string) error {
 				b.cves[vuln.ID] = &graph.CVE{
 					ID:           vuln.ID,
 					Package:      result.Package.Name,
-					VersionRange: "",
+					VersionRange: rangeExpr,
 					Severity:     severity,
 					CVSS:         cvss,
 					EPSS:         0.0,
-					FixAvailable: false,
+					FixAvailable: strings.Contains(rangeExpr, "<"),
 					Description:  vuln.Summary,
+					Ecosystem:    eco,
 				}
 			}
+			b.matches = append(b.matches, graph.Match{
+				CVE:       vuln.ID,
+				Package:   result.Package.Name,
+				Version:   result.Package.Version,
+				Image:     b.imageRef,
+				Ecosystem: eco,
+			})
 		}
 	}
 	return nil
@@ -286,19 +385,28 @@ func (b *Builder) Build() *graph.Twin {
 		imageRef = "ingested-image"
 	}
 
+	// SBOM is present when we ingested package metadata; provenance/signature
+	// stay MISSING until verify.Attestation runs (never hardcode VERIFIED).
+	sbomStatus := graph.StatusMissing
+	if len(packages) > 0 {
+		sbomStatus = graph.StatusVerified
+	}
+
 	return &graph.Twin{
 		CVEs: cves,
 		Artifacts: []graph.Artifact{
 			{
 				Image:      imageRef,
+				Digest:     b.imageDigest,
 				Packages:   packages,
-				SBOM:       "verified",
-				Provenance: "verified",
-				Signature:  "verified",
+				SBOM:       sbomStatus,
+				Provenance: graph.StatusMissing,
+				Signature:  graph.StatusMissing,
 			},
 		},
 		Workloads: []graph.Workload{},
 		VEX:       b.vexStatements,
+		Matches:   b.matches,
 	}
 }
 
@@ -327,4 +435,80 @@ func normalizeSeverity(s string) string {
 		}
 		return s
 	}
+}
+
+func ecosystemFromPURL(purl string) string {
+	purl = strings.TrimSpace(purl)
+	if !strings.HasPrefix(purl, "pkg:") {
+		return ""
+	}
+	rest := strings.TrimPrefix(purl, "pkg:")
+	if i := strings.Index(rest, "/"); i > 0 {
+		return graph.InferEcosystem("", rest[:i])
+	}
+	return ""
+}
+
+func ecosystemFromGrype(artifactType, purl string) string {
+	if eco := ecosystemFromPURL(purl); eco != "" {
+		return eco
+	}
+	return graph.InferEcosystem("", artifactType)
+}
+
+func constraintFromGrype(match GrypeMatch, fixVersions []string) string {
+	for _, d := range match.MatchDetails {
+		c := strings.TrimSpace(d.Found.VersionConstraint)
+		if c == "" {
+			continue
+		}
+		// Grype appends " (apk)" / " (unknown)" — strip trailing paren note.
+		if i := strings.Index(c, " ("); i > 0 {
+			c = strings.TrimSpace(c[:i])
+		}
+		return c
+	}
+	if len(fixVersions) > 0 {
+		return "< " + fixVersions[0]
+	}
+	return ""
+}
+
+func osvRangeExpression(vuln OSVVulnerability) string {
+	var parts []string
+	for _, aff := range vuln.Affected {
+		for _, r := range aff.Ranges {
+			introduced := ""
+			fixed := ""
+			last := ""
+			for _, e := range r.Events {
+				if e.Introduced != "" && e.Introduced != "0" {
+					introduced = e.Introduced
+				}
+				if e.Introduced == "0" && introduced == "" {
+					introduced = "0"
+				}
+				if e.Fixed != "" {
+					fixed = e.Fixed
+				}
+				if e.LastAffected != "" {
+					last = e.LastAffected
+				}
+			}
+			if fixed != "" {
+				if introduced != "" && introduced != "0" {
+					parts = append(parts, ">= "+introduced+", < "+fixed)
+				} else {
+					parts = append(parts, "< "+fixed)
+				}
+			} else if last != "" {
+				parts = append(parts, "<= "+last)
+			}
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	// Use first range as the CVE-level expression (matches still pin exact versions).
+	return parts[0]
 }

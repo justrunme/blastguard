@@ -1,0 +1,15 @@
+{
+  "default_workload": "payment-api",
+  "fix_image_candidates": [
+    "ghcr.io/justrunme/payment-api:v42"
+  ],
+  "remediation": {
+    "cve": "CVE-2026-1234",
+    "package": "openssl",
+    "fixed_version": "3.3.2",
+    "workload_image_updates": {
+      "payment-api": "ghcr.io/justrunme/payment-api:v42"
+    }
+  },
+  "critical_label": "blastguard.io/critical"
+}

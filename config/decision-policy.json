@@ -2,7 +2,7 @@
   "version": 1,
   "name": "supply-chain-blast-radius",
   "tagline": "Don't count vulnerabilities. Predict their blast radius.",
-  "lifecycle": "Discover → Trace → Decide → Enforce → Verify",
+  "lifecycle": "Discover → Trace → Decide → Enforce (CI exit codes) → Verify",
   "rules": [
     {
       "id": "critical-exposed-path",

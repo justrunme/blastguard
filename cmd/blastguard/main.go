@@ -10,10 +10,12 @@ import (
 	"strings"
 
 	"github.com/justrunme/blastguard/internal/cluster"
+	"github.com/justrunme/blastguard/internal/config"
 	"github.com/justrunme/blastguard/internal/decide"
 	"github.com/justrunme/blastguard/internal/graph"
 	"github.com/justrunme/blastguard/internal/ingest"
 	"github.com/justrunme/blastguard/internal/render"
+	"github.com/justrunme/blastguard/internal/verify"
 )
 
 func main() {
@@ -24,38 +26,36 @@ func main() {
 	root := findRoot()
 	twinPath := filepath.Join(root, "fixtures", "demo-graph.json")
 	policyPath := filepath.Join(root, "config", "decision-policy.json")
+	demo, _ := config.LoadDemoFromRoot(root)
 
 	switch os.Args[1] {
 	case "ingest":
-		runIngest(os.Args[2:])
+		runIngest(os.Args[2:], root, demo)
 	case "demo":
+		fs := flag.NewFlagSet("demo", flag.ExitOnError)
+		output := fs.String("output", "text", "Output format: text|json")
+		failOn := fs.String("fail-on", "", "Fail on warn|block (block is always exit 2)")
+		verifyAtt := fs.Bool("verify-attestations", false, "Run cosign verify-attestation for images")
+		_ = fs.Parse(flagsFirst(os.Args[2:]))
 		cve := "CVE-2026-1234"
-		if len(os.Args) > 2 {
-			cve = os.Args[2]
-		}
-		runTrace(twinPath, policyPath, cve)
-	case "rehearse":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "usage: blastguard rehearse <CVE-ID|image> [ref]")
-			os.Exit(2)
-		}
-		if strings.HasPrefix(os.Args[2], "CVE-") {
-			runTrace(twinPath, policyPath, os.Args[2])
-			return
-		}
-		if os.Args[2] == "image" {
-			if len(os.Args) < 4 {
-				fmt.Fprintln(os.Stderr, "usage: blastguard rehearse image <ref>")
-				os.Exit(2)
+		for _, a := range fs.Args() {
+			if strings.HasPrefix(a, "CVE-") {
+				cve = a
+				break
 			}
-			runImageRehearse(twinPath, policyPath, os.Args[3])
-			return
 		}
-		runImageRehearse(twinPath, policyPath, os.Args[2])
+		code := runTrace(twinPath, policyPath, cve, demo, *output, *failOn, *verifyAtt)
+		os.Exit(code)
+	case "rehearse":
+		code := runRehearse(flagsFirst(os.Args[2:]), twinPath, policyPath, demo)
+		os.Exit(code)
 	case "prove":
-		runProve(twinPath, policyPath)
+		fs := flag.NewFlagSet("prove", flag.ExitOnError)
+		output := fs.String("output", "text", "Output format: text|json")
+		_ = fs.Parse(flagsFirst(os.Args[2:]))
+		runProve(twinPath, policyPath, demo, *output)
 	case "version":
-		fmt.Println("blastguard 0.1.0")
+		fmt.Println("blastguard 0.2.0")
 	case "help", "-h", "--help":
 		usage()
 	default:
@@ -65,6 +65,37 @@ func main() {
 	}
 }
 
+// flagsFirst moves -flag and --flag[=val] args ahead of positionals so the
+// standard library flag parser accepts "cmd CVE-… --output json".
+func flagsFirst(args []string) []string {
+	var flags, rest []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			rest = append(rest, args[i:]...)
+			break
+		}
+		if strings.HasPrefix(a, "-") {
+			flags = append(flags, a)
+			// boolean flags have no following value; ones with = already inline.
+			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				// Treat next token as value unless this looks like a bool switch
+				// we know about. Safer: always take next when it doesn't look like CVE-/path.
+				next := args[i+1]
+				name := strings.TrimLeft(a, "-")
+				if name == "verify-attestations" || name == "from-cluster" || name == "h" || name == "help" {
+					continue
+				}
+				flags = append(flags, next)
+				i++
+			}
+			continue
+		}
+		rest = append(rest, a)
+	}
+	return append(flags, rest...)
+}
+
 func usage() {
 	fmt.Print(`BlastGuard — Supply Chain Blast-Radius Control Plane
 
@@ -72,10 +103,15 @@ Don't count vulnerabilities. Predict their blast radius.
 
 Usage:
   blastguard ingest [options]
-  blastguard demo [CVE-ID]
-  blastguard rehearse CVE-2026-1234
-  blastguard rehearse image ghcr.io/justrunme/payment-api:v2
-  blastguard prove
+  blastguard demo [CVE-ID] [--output text|json] [--fail-on warn|block] [--verify-attestations]
+  blastguard rehearse CVE-2026-1234 [--output json] [--fail-on warn]
+  blastguard rehearse image <ref> [--workload <name>] [--output json]
+  blastguard prove [--output json]
+
+Exit codes (decision commands / ingest --trace):
+  0  ALLOW (WARN also exits 0 unless --fail-on warn)
+  1  WARN when --fail-on warn
+  2  BLOCK or QUARANTINE
 
 Commands:
   ingest       Build graph from SBOM, vulnerability reports, and VEX
@@ -86,12 +122,14 @@ Commands:
                --vex <path>
                --from-cluster (scan live Kubernetes cluster)
                --kubeconfig <path>
-               --output <path>
+               --output <path|json> (twin file path, or "json" with --trace for decision JSON)
                --policy <path>
                --trace <CVE-ID> (evaluate after ingestion)
                --workload <name> (scope --trace to one workload)
+               --fail-on warn|block
+               --verify-attestations
 
-Discover → Trace → Decide → Enforce → Verify
+Discover → Trace → Decide → Enforce (CI exit codes) → Verify
 `)
 }
 
@@ -113,29 +151,46 @@ func findRoot() string {
 	return wd
 }
 
-func runTrace(twinPath, policyPath, cve string) {
+func runTrace(twinPath, policyPath, cve string, demo config.Demo, output, failOn string, verifyAtt bool) int {
 	t, err := graph.Load(twinPath)
 	must(err)
 	p, err := decide.LoadPolicy(policyPath)
 	must(err)
-	s, err := decide.TraceCVE(t, cve)
+	opts := decide.TraceOptions{Demo: &demo, VerifyAttestations: verifyAtt}
+	if verifyAtt {
+		opts.Verifier = verify.Default()
+	}
+	s, err := decide.TraceCVEWorkloadOpts(t, cve, "", opts)
 	must(err)
 	d := p.Evaluate(s)
-	fmt.Print(render.Card(d))
+	emitDecision(d, output)
 	writeEvidence(filepath.Join(filepath.Dir(twinPath), "..", ".evidence"), d)
+	return decide.ExitCode(d.Action, strings.EqualFold(failOn, "warn"))
 }
 
-func runProve(twinPath, policyPath string) {
+func runProve(twinPath, policyPath string, demo config.Demo, output string) {
 	t, err := graph.Load(twinPath)
 	must(err)
 	p, err := decide.LoadPolicy(policyPath)
 	must(err)
 
-	beforeSig, err := decide.TraceCVE(t, "CVE-2026-1234")
+	cveID := demo.Remediation.CVE
+	if cveID == "" {
+		cveID = "CVE-2026-1234"
+	}
+	pkg := demo.Remediation.Package
+	if pkg == "" {
+		pkg = "openssl"
+	}
+	fixed := demo.Remediation.FixedVersion
+	if fixed == "" {
+		fixed = "3.3.2"
+	}
+
+	beforeSig, err := decide.TraceCVEWorkloadOpts(t, cveID, "", decide.TraceOptions{Demo: &demo})
 	must(err)
 	before := p.Evaluate(beforeSig)
 
-	// Simulate fleet remediation: bump openssl across artifacts + move workloads to fixed images.
 	patched := *t
 	arts := make([]graph.Artifact, len(t.Artifacts))
 	copy(arts, t.Artifacts)
@@ -143,8 +198,8 @@ func runProve(twinPath, policyPath string) {
 		pkgs := make([]graph.Pkg, len(arts[i].Packages))
 		copy(pkgs, arts[i].Packages)
 		for j := range pkgs {
-			if pkgs[j].Name == "openssl" {
-				pkgs[j].Version = "3.3.2"
+			if pkgs[j].Name == pkg {
+				pkgs[j].Version = fixed
 			}
 		}
 		arts[i].Packages = pkgs
@@ -153,18 +208,53 @@ func runProve(twinPath, policyPath string) {
 	wls := make([]graph.Workload, len(t.Workloads))
 	copy(wls, t.Workloads)
 	for i := range wls {
-		if wls[i].Name == "payment-api" {
-			wls[i].Image = "ghcr.io/justrunme/payment-api:v42"
+		if img, ok := demo.Remediation.WorkloadImageUpdates[wls[i].Name]; ok {
+			wls[i].Image = img
 		}
 	}
 	patched.Workloads = wls
-	afterSig, err := decide.TraceCVE(&patched, "CVE-2026-1234")
+	// Clear scanner matches so range evaluation uses bumped versions.
+	patched.Matches = nil
+	afterSig, err := decide.TraceCVEWorkloadOpts(&patched, cveID, "", decide.TraceOptions{Demo: &demo})
 	must(err)
 	after := p.Evaluate(afterSig)
+	if strings.EqualFold(output, "json") {
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"before": before, "after": after})
+		return
+	}
 	fmt.Print(render.Remediation(before, after))
 }
 
-func runImageRehearse(twinPath, policyPath, image string) {
+func runRehearse(args []string, twinPath, policyPath string, demo config.Demo) int {
+	fs := flag.NewFlagSet("rehearse", flag.ExitOnError)
+	output := fs.String("output", "text", "Output format: text|json")
+	failOn := fs.String("fail-on", "", "Fail on warn|block")
+	workload := fs.String("workload", "", "Workload to project the image onto (default from config/demo.json)")
+	_ = fs.Parse(args)
+	rest := fs.Args()
+	if len(rest) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: blastguard rehearse <CVE-ID|image> [ref]")
+		return 2
+	}
+	if strings.HasPrefix(rest[0], "CVE-") {
+		return runTrace(twinPath, policyPath, rest[0], demo, *output, *failOn, false)
+	}
+	image := rest[0]
+	if image == "image" {
+		if len(rest) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: blastguard rehearse image <ref>")
+			return 2
+		}
+		image = rest[1]
+	}
+	wl := *workload
+	if wl == "" {
+		wl = demo.DefaultWorkload
+	}
+	return runImageRehearse(twinPath, policyPath, image, wl, demo, *output, *failOn)
+}
+
+func runImageRehearse(twinPath, policyPath, image, workload string, demo config.Demo, output, failOn string) int {
 	t, err := graph.Load(twinPath)
 	must(err)
 	p, err := decide.LoadPolicy(policyPath)
@@ -175,30 +265,33 @@ func runImageRehearse(twinPath, policyPath, image string) {
 	if art == nil {
 		lines = append(lines, "Image not in twin fixtures — treating as unknown proposed artifact")
 		lines = append(lines, "POLICY", "⚠ WARN", "Reason: unknown image; rehearse requires SBOM attachment")
+		if strings.EqualFold(output, "json") {
+			d := decide.Decision{Action: "WARN", RuleID: "unknown-image", Reason: "unknown image; rehearse requires SBOM attachment"}
+			emitDecision(d, "json")
+			return decide.ExitCode(d.Action, strings.EqualFold(failOn, "warn"))
+		}
 		fmt.Print(render.RehearseImage(image, lines))
-		return
+		return decide.ExitCode("WARN", strings.EqualFold(failOn, "warn"))
 	}
 
 	newCVEs := 0
 	var decisions []decide.Decision
 	for _, cve := range t.CVEs {
-		if !graph.PackageAffected(art, &cve) {
+		if !graph.TwinPackageAffected(t, art, &cve) {
 			continue
 		}
 		newCVEs++
-		// Project runtime as if this image replaced payment-api in prod
 		proj := *t
 		wls := make([]graph.Workload, len(t.Workloads))
 		copy(wls, t.Workloads)
 		for i := range wls {
-			if wls[i].Name == "payment-api" {
+			if wls[i].Name == workload {
 				wls[i].Image = image
 			}
 		}
 		proj.Workloads = wls
-		s, err := decide.TraceCVE(&proj, cve.ID)
+		s, err := decide.TraceCVEWorkloadOpts(&proj, cve.ID, "", decide.TraceOptions{Demo: &demo})
 		must(err)
-		// annotate VEX
 		if t.VEXStatus(cve.ID, image) == "not_affected" {
 			s.VEXNotAffected = true
 			lines = append(lines, fmt.Sprintf("%s\n  VEX: not_affected", cve.ID))
@@ -228,6 +321,11 @@ func runImageRehearse(twinPath, policyPath, image string) {
 		}
 	}
 
+	if strings.EqualFold(output, "json") {
+		emitDecision(decide.Decision{Action: action, Reason: reason, Signals: decide.Signals{FixImage: image, AffectedArts: newCVEs}}, "json")
+		return decide.ExitCode(action, strings.EqualFold(failOn, "warn"))
+	}
+
 	lines = append(lines,
 		fmt.Sprintf("New CVEs                    %d", newCVEs),
 		"POLICY",
@@ -236,6 +334,17 @@ func runImageRehearse(twinPath, policyPath, image string) {
 		"  "+reason,
 	)
 	fmt.Print(render.RehearseImage(image, lines))
+	return decide.ExitCode(action, strings.EqualFold(failOn, "warn"))
+}
+
+func emitDecision(d decide.Decision, output string) {
+	if strings.EqualFold(output, "json") {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(d)
+		return
+	}
+	fmt.Print(render.Card(d))
 }
 
 func writeEvidence(dir string, d decide.Decision) {
@@ -244,7 +353,7 @@ func writeEvidence(dir string, d decide.Decision) {
 	_ = os.WriteFile(filepath.Join(dir, "decision-latest.json"), b, 0o644)
 }
 
-func runIngest(args []string) {
+func runIngest(args []string, root string, demo config.Demo) {
 	fs := flag.NewFlagSet("ingest", flag.ExitOnError)
 	sbomCDX := fs.String("sbom-cyclonedx", "", "CycloneDX SBOM JSON file")
 	sbomSPDX := fs.String("sbom-spdx", "", "SPDX SBOM JSON file")
@@ -253,10 +362,13 @@ func runIngest(args []string) {
 	vexFile := fs.String("vex", "", "OpenVEX document")
 	fromCluster := fs.Bool("from-cluster", false, "Scan live Kubernetes cluster")
 	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig")
-	output := fs.String("output", "", "Output twin JSON file")
+	output := fs.String("output", "", "Output twin JSON file, or 'json' to emit decision JSON with --trace")
 	policyPath := fs.String("policy", "", "Policy file for evaluation")
 	traceCVE := fs.String("trace", "", "CVE to trace after ingestion")
 	workload := fs.String("workload", "", "Scope --trace to a single workload name")
+	failOn := fs.String("fail-on", "", "Exit 1 on WARN when set to warn; BLOCK/QUARANTINE always exit 2")
+	verifyAtt := fs.Bool("verify-attestations", false, "Run cosign verify-attestation per artifact")
+	decisionOut := fs.String("decision-output", "text", "Decision format when tracing: text|json")
 
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -301,12 +413,20 @@ func runIngest(args []string) {
 		fmt.Fprintf(os.Stderr, "✓ Scanned cluster: %d workloads\n", len(workloads))
 	}
 
-	if *output != "" {
+	writeTwin := *output
+	decisionJSON := false
+	if strings.EqualFold(writeTwin, "json") {
+		decisionJSON = true
+		writeTwin = ""
+		*decisionOut = "json"
+	}
+
+	if writeTwin != "" {
 		b, err := json.MarshalIndent(twin, "", "  ")
 		must(err)
-		must(os.WriteFile(*output, b, 0o644))
-		fmt.Fprintf(os.Stderr, "✓ Wrote twin to %s\n", *output)
-	} else {
+		must(os.WriteFile(writeTwin, b, 0o644))
+		fmt.Fprintf(os.Stderr, "✓ Wrote twin to %s\n", writeTwin)
+	} else if *traceCVE == "" || !decisionJSON {
 		b, err := json.MarshalIndent(twin, "", "  ")
 		must(err)
 		fmt.Println(string(b))
@@ -315,16 +435,26 @@ func runIngest(args []string) {
 	if *traceCVE != "" && *policyPath != "" {
 		p, err := decide.LoadPolicy(*policyPath)
 		must(err)
-		s, err := decide.TraceCVEWorkload(twin, *traceCVE, *workload)
+		opts := decide.TraceOptions{Demo: &demo, VerifyAttestations: *verifyAtt}
+		if *verifyAtt {
+			opts.Verifier = verify.Default()
+		}
+		s, err := decide.TraceCVEWorkloadOpts(twin, *traceCVE, *workload, opts)
 		must(err)
 		d := p.Evaluate(s)
 		fmt.Fprintln(os.Stderr, "\n── Decision ──")
 		if *workload != "" {
 			fmt.Fprintf(os.Stderr, "workload=%s\n", *workload)
 		}
-		fmt.Fprint(os.Stderr, render.Card(d))
+		if strings.EqualFold(*decisionOut, "json") {
+			emitDecision(d, "json")
+		} else {
+			fmt.Fprint(os.Stderr, render.Card(d))
+		}
 		fmt.Fprintf(os.Stderr, "DECISION %s workload=%s cve=%s\n", d.Action, *workload, *traceCVE)
+		os.Exit(decide.ExitCode(d.Action, strings.EqualFold(*failOn, "warn")))
 	}
+	_ = root
 }
 
 func must(err error) {

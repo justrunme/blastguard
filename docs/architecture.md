@@ -1,7 +1,7 @@
 # Architecture — BlastGuard
 
 ```text
-Discover → Trace → Decide → Enforce → Verify
+Discover → Trace → Decide → Enforce (CI exit codes) → Verify
 ```
 
 ## Position
@@ -11,6 +11,10 @@ GUAC can store supply-chain graphs.
 Sigstore can verify and admit.
 
 BlastGuard is the **blast-radius decision plane**: correlating SBOM truth with runtime/exposure truth into ALLOW / WARN / QUARANTINE / BLOCK — then proving remediation.
+
+**Enforce** in this repo is the CLI exit-code gate for CI. Admission webhooks / Kyverno ClusterPolicies are integration targets for the decision JSON, not an in-tree controller.
+
+Affected-package matching trusts scanner match edges (Grype/OSV) or evaluates `version_range` with ecosystem-aware comparators (semver, Go, Debian, RPM, APK). See `docs/exposure-reachability.md` for exposure vs reachability.
 
 ## Digital twin
 
