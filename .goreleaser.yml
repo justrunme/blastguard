@@ -62,11 +62,10 @@ signs:
     signature: '${artifact}.sig'
     args:
       - sign-blob
-      - '--yes'
-      - '--new-bundle-format=false'
       - '--output-certificate=${certificate}'
       - '--output-signature=${signature}'
       - '${artifact}'
+      - '--yes'
     artifacts: checksum
     output: true
 
