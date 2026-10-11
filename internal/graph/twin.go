@@ -106,18 +106,69 @@ func (t *Twin) Artifact(image string) *Artifact {
 	return nil
 }
 
-// ArtifactByDigest returns an artifact pinned by content digest when available.
-func (t *Twin) ArtifactByDigest(digest string) *Artifact {
-	digest = strings.TrimSpace(digest)
+// NormalizeImageDigest extracts an exact sha256:<64 hex> digest from a raw
+// image ID or image reference. Handles docker-pullable://…@sha256:… and
+// name@sha256:… forms. Short or prefix digests return "".
+func NormalizeImageDigest(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return ""
+	}
+	// Strip docker-pullable:// (and similar) scheme prefixes.
+	if i := strings.Index(raw, "://"); i >= 0 {
+		raw = raw[i+3:]
+	}
+	// Prefer the digest after the last '@' when present.
+	if at := strings.LastIndex(raw, "@"); at >= 0 {
+		raw = raw[at+1:]
+	}
+	idx := strings.Index(raw, "sha256:")
+	if idx < 0 {
+		return ""
+	}
+	dig := raw[idx:]
+	for i, r := range dig {
+		if r == '?' || r == '#' || r == ' ' || r == '"' {
+			dig = dig[:i]
+			break
+		}
+	}
+	const want = 7 + 64
+	if len(dig) < want {
+		return ""
+	}
+	hexPart := dig[7:want]
+	for _, r := range hexPart {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return ""
+		}
+	}
+	if len(dig) > want {
+		next := dig[want]
+		if (next >= '0' && next <= '9') || (next >= 'a' && next <= 'f') {
+			return ""
+		}
+	}
+	return dig[:want]
+}
+
+// ArtifactByDigest returns an artifact pinned by exact content digest equality.
+// The input is normalized (docker-pullable://…@sha256:… → sha256:<64hex>).
+// Comparison is equality only against Artifact.Digest or the exact digest
+// parsed from Artifact.Image — never substring/suffix Contains matches.
+func (t *Twin) ArtifactByDigest(raw string) *Artifact {
+	digest := NormalizeImageDigest(raw)
 	if digest == "" {
 		return nil
 	}
 	for i := range t.Artifacts {
-		if t.Artifacts[i].Digest == digest || strings.HasSuffix(t.Artifacts[i].Image, "@"+digest) {
-			return &t.Artifacts[i]
+		a := &t.Artifacts[i]
+		ad := NormalizeImageDigest(a.Digest)
+		if ad == "" {
+			ad = NormalizeImageDigest(a.Image)
 		}
-		if strings.Contains(t.Artifacts[i].Image, digest) {
-			return &t.Artifacts[i]
+		if ad != "" && ad == digest {
+			return a
 		}
 	}
 	return nil
@@ -177,7 +228,7 @@ func (t *Twin) BindWorkloads(workloads []Workload) {
 		}
 		t.Artifacts = append(t.Artifacts, Artifact{
 			Image:      w.Image,
-			Digest:     w.ImageID,
+			Digest:     NormalizeImageDigest(w.ImageID),
 			Packages:   nil,
 			SBOM:       StatusMissing,
 			Provenance: StatusMissing,
