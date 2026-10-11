@@ -125,9 +125,9 @@ Commands:
                --vulns-grype <path>
                --vulns-osv <path>
                --vex <path> (OpenVEX file)
-               --vex-attestation <image> (optional OCI OpenVEX via cosign)
-               --verify-openvex (require cosign verify-attestation --type openvex)
-               --runtime-evidence <path> (optional Tetragon/Falco export)
+               --vex-attestation <image> (OCI OpenVEX via cosign; requires trust material)
+               --key <path> | --certificate-identity + --certificate-oidc-issuer
+               --runtime-evidence <path> (optional blastguard.runtime_evidence/v1)
                --from-cluster (scan live Kubernetes cluster)
                --kubeconfig <path>
                --output <path|json> (twin file path, or "json" with --trace for decision JSON)
@@ -373,8 +373,11 @@ func runIngest(args []string, root string, demo config.Demo) {
 	vulnsGrype := fs.String("vulns-grype", "", "Grype vulnerability JSON report")
 	vulnsOSV := fs.String("vulns-osv", "", "OSV-Scanner vulnerability JSON report")
 	vexFile := fs.String("vex", "", "OpenVEX document")
-	vexAttestation := fs.String("vex-attestation", "", "Image ref to fetch OpenVEX attestation from (OCI)")
-	verifyOpenVEX := fs.Bool("verify-openvex", false, "Require cosign verify-attestation --type openvex for --vex-attestation")
+	vexAttestation := fs.String("vex-attestation", "", "Image ref to fetch+verify OpenVEX attestation from (OCI)")
+	cosignKey := fs.String("key", "", "Cosign public key for --vex-attestation (or set COSIGN_KEY)")
+	certIdentity := fs.String("certificate-identity", "", "Expected certificate identity for --vex-attestation")
+	certIdentityRegexp := fs.String("certificate-identity-regexp", "", "Expected certificate identity regexp for --vex-attestation")
+	certOIDCIssuer := fs.String("certificate-oidc-issuer", "", "Expected OIDC issuer for --vex-attestation")
 	runtimeEvidence := fs.String("runtime-evidence", "", "Optional runtime evidence JSON (blastguard.runtime_evidence/v1)")
 	fromCluster := fs.Bool("from-cluster", false, "Scan live Kubernetes cluster")
 	kubeconfig := fs.String("kubeconfig", "", "Path to kubeconfig")
@@ -426,22 +429,31 @@ func runIngest(args []string, root string, demo config.Demo) {
 
 	// OpenVEX after artifacts/workloads exist so digest binding can match.
 	if *vexAttestation != "" {
-		cv := &verify.CosignVerifier{}
+		key := *cosignKey
+		if key == "" {
+			key = os.Getenv("COSIGN_KEY")
+		}
+		cv := &verify.CosignVerifier{
+			KeyPath:                   key,
+			CertificateIdentity:       *certIdentity,
+			CertificateIdentityRegexp: *certIdentityRegexp,
+			CertificateOIDCIssuer:     *certOIDCIssuer,
+		}
 		res := cv.VerifyOpenVEX(context.Background(), *vexAttestation)
-		if *verifyOpenVEX && res.Status != graph.StatusVerified {
+		// Fail closed: never apply an unverified payload.
+		if res.Status != graph.StatusVerified || len(res.Payload) == 0 {
 			fmt.Fprintf(os.Stderr, "openvex attestation verify failed for %s: %s (%s)\n", *vexAttestation, res.Status, res.Detail)
 			os.Exit(1)
 		}
-		if len(res.Payload) > 0 {
-			warns, err := ingest.ApplyOpenVEXBytes(twin, res.Payload)
-			must(err)
-			for _, w := range warns {
-				fmt.Fprintf(os.Stderr, "⚠ %s\n", w)
-			}
-			fmt.Fprintf(os.Stderr, "✓ Applied OpenVEX attestation from %s (%s)\n", *vexAttestation, res.Status)
-		} else if *vexFile == "" {
-			fmt.Fprintf(os.Stderr, "⚠ OpenVEX attestation for %s: %s — provide --vex file as fallback\n", *vexAttestation, res.Status)
+		before := len(twin.VEX)
+		warns, err := ingest.ApplyOpenVEXBytes(twin, res.Payload)
+		must(err)
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "⚠ %s\n", w)
 		}
+		applied := len(twin.VEX) - before
+		fmt.Fprintf(os.Stderr, "✓ Applied OpenVEX attestation from %s: %d statement(s) accepted (%d in predicate)\n",
+			*vexAttestation, applied, res.Statements)
 	}
 	if *vexFile != "" {
 		warns, err := ingest.ApplyOpenVEX(twin, *vexFile)

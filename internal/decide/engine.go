@@ -83,7 +83,7 @@ type TraceOptions struct {
 	Verifier           verify.Verifier
 	Demo               *config.Demo
 	VerifyAttestations bool
-	// RuntimeEvidence is optional Tetragon/Falco export (see runtime.Document).
+	// RuntimeEvidence is optional blastguard.runtime_evidence/v1 export (see runtime.Document).
 	RuntimeEvidence *runtime.Document
 }
 
@@ -124,12 +124,19 @@ func (p *Policy) Evaluate(s Signals) Decision {
 	// under_investigation keeps WARN (never ALLOW via empty blast radius alone).
 	underInvest := strings.EqualFold(s.VEXStatus, openvex.StatusUnderInvestigation)
 
+	// FALSE execution_observed never yields ALLOW by itself (absence of exec ≠ safe).
+	execFalse := strings.EqualFold(s.ExecutionObserved, runtime.False)
+	execTrue := strings.EqualFold(s.ExecutionObserved, runtime.True)
+	netTrue := strings.EqualFold(s.NetworkReachable, runtime.True)
+
 	if s.AffectedArts == 0 && s.RunningWLs == 0 && !s.VEXNotAffected && !underInvest {
 		if s.CVE != "" && s.Package != "" {
-			return Decision{Action: "ALLOW", RuleID: "no-blast-radius", Reason: "no affected artifacts remain in the twin", Signals: s}
+			d := Decision{Action: "ALLOW", RuleID: "no-blast-radius", Reason: "no affected artifacts remain in the twin", Signals: s}
+			return applyTriad(d, execFalse, execTrue, netTrue)
 		}
 	}
 	if s.VEXNotAffected && s.AffectedArts == 0 {
+		// VEX not_affected is an explicit attestation — triad does not override.
 		return Decision{Action: "ALLOW", RuleID: "vex-clear", Reason: "VEX asserts not_affected for this artifact", Signals: s}
 	}
 	if underInvest {
@@ -161,9 +168,39 @@ func (p *Policy) Evaluate(s Signals) Decision {
 		if !matchString(w.Provenance, s.Provenance) {
 			continue
 		}
-		return Decision{Action: r.Action, RuleID: r.ID, Reason: r.ReasonTemplate, Signals: s}
+		d := Decision{Action: r.Action, RuleID: r.ID, Reason: r.ReasonTemplate, Signals: s}
+		return applyTriad(d, execFalse, execTrue, netTrue)
 	}
-	return Decision{Action: "WARN", RuleID: "fallback", Reason: "no policy rule matched", Signals: s}
+	d := Decision{Action: "WARN", RuleID: "fallback", Reason: "no policy rule matched", Signals: s}
+	return applyTriad(d, execFalse, execTrue, netTrue)
+}
+
+// applyTriad enforces reachability-triad semantics on a candidate decision:
+//   - execution_observed=FALSE never yields ALLOW alone (downgrade to WARN)
+//   - execution_observed=TRUE + network_reachable=TRUE can escalate WARN→QUARANTINE
+//   - UNKNOWN leaves the candidate action unchanged
+func applyTriad(d Decision, execFalse, execTrue, netTrue bool) Decision {
+	if d.Action == "ALLOW" && execFalse && !d.Signals.VEXNotAffected {
+		d.Action = "WARN"
+		d.RuleID = d.RuleID + "+exec-false-guard"
+		d.Reason = d.Reason + " (execution_observed=FALSE must not ALLOW alone)"
+		return d
+	}
+	if execTrue && netTrue {
+		switch d.Action {
+		case "ALLOW":
+			if !d.Signals.VEXNotAffected {
+				d.Action = "WARN"
+				d.RuleID = d.RuleID + "+exec-net-escalate"
+				d.Reason = d.Reason + " (execution_observed=TRUE and network_reachable escalate)"
+			}
+		case "WARN":
+			d.Action = "QUARANTINE"
+			d.RuleID = d.RuleID + "+exec-net-escalate"
+			d.Reason = d.Reason + " (execution_observed=TRUE and network_reachable escalate)"
+		}
+	}
+	return d
 }
 
 // TraceCVE builds blast-radius signals for one CVE against the digital twin.

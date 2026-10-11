@@ -187,8 +187,9 @@ jobs:
             ]
           }
           JSON
-          # Wrong digest must NOT flip
-          WRONG='sha256:0000000000000000000000000000000000000000000000000000000000000001'
+          # Prefix digest must NOT flip (substring/suffix match regression)
+          HEX="${DIGEST#sha256:}"
+          WRONG="sha256:${HEX:0:8}"
           cat > /tmp/nginx-openvex-wrong.json <<JSON
           {
             "@context": "https://openvex.dev/ns/v0.2.0",
@@ -221,6 +222,8 @@ jobs:
           set -e
           WRONG_DECISION=$(grep -E '^DECISION ' /tmp/vex-wrong.out | awk '{print $2}')
           test "$WRONG_DECISION" = "BLOCK" || { echo "ERROR: wrong digest must keep BLOCK, got ${WRONG_DECISION:-empty}"; exit 1; }
+          # Prefix VEX must not flip to ALLOW — exit must remain non-zero for BLOCK (2)
+          test "$WRONG_CODE" -eq 2 || { echo "ERROR: expected exit 2 for BLOCK with prefix digest, got $WRONG_CODE"; exit 1; }
 
           set +e
           ./bin/blastguard ingest \
@@ -240,4 +243,104 @@ jobs:
           test "$OK_DECISION" = "ALLOW" || { echo "ERROR: expected ALLOW after not_affected for matching digest, got ${OK_DECISION:-empty}"; cat /tmp/vex-ok.out; exit 1; }
           test "$OK_CODE" -eq 0 || { echo "ERROR: expected exit 0 for ALLOW, got $OK_CODE"; exit 1; }
           echo "✓ OpenVEX not_affected flips BLOCK→ALLOW only for matching digest"
+
+      - name: Install cosign and local registry
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64 -o /tmp/cosign
+          chmod +x /tmp/cosign
+          sudo mv /tmp/cosign /usr/local/bin/cosign
+          # Allow HTTP registry on localhost:5001
+          sudo mkdir -p /etc/docker
+          if [ -f /etc/docker/daemon.json ]; then
+            sudo jq '. + {"insecure-registries": ((.["insecure-registries"] // []) + ["localhost:5001"] | unique)}' /etc/docker/daemon.json > /tmp/daemon.json
+            sudo mv /tmp/daemon.json /etc/docker/daemon.json
+          else
+            echo '{"insecure-registries":["localhost:5001"]}' | sudo tee /etc/docker/daemon.json
+          fi
+          sudo systemctl restart docker || sudo service docker restart || true
+          docker run -d --name bg-registry -p 5001:5000 registry:2
+
+      - name: OpenVEX attestation verify (key) applies; wrong key rejected
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/bin:$PATH"
+          CVE=$(jq -r '[.cves[] | select((.severity|ascii_upcase)=="HIGH" or (.severity|ascii_upcase)=="CRITICAL")] | .[0].id' /tmp/cluster-twin.json)
+          DIGEST=$(jq -r '.artifacts[] | select(.image|test("nginx")) | .digest' /tmp/cluster-twin.json | head -1)
+          if [ -z "$DIGEST" ] || [ "$DIGEST" = "null" ]; then
+            DIGEST=$(jq -r '.source.target.imageID // empty' /tmp/nginx-vulns.json)
+          fi
+          test -n "$DIGEST" && test "$DIGEST" != "null"
+
+          # Retag nginx into local registry and push
+          REG=localhost:5001
+          docker pull nginx:alpine
+          docker tag nginx:alpine "$REG/nginx:alpine"
+          docker push "$REG/nginx:alpine"
+          IMG="$REG/nginx:alpine"
+
+          mkdir -p /tmp/cosign-good /tmp/cosign-bad
+          (cd /tmp/cosign-good && COSIGN_PASSWORD= cosign generate-key-pair)
+          (cd /tmp/cosign-bad && COSIGN_PASSWORD=bad cosign generate-key-pair)
+
+          cat > /tmp/att-openvex.json <<JSON
+          {
+            "@context": "https://openvex.dev/ns/v0.2.0",
+            "@id": "https://example.com/vex/nginx-att",
+            "author": "blastguard-ci",
+            "timestamp": "2026-10-11T00:00:00Z",
+            "version": "1",
+            "statements": [
+              {
+                "vulnerability": { "name": "$CVE" },
+                "products": [ { "@id": "pkg:oci/nginx@$DIGEST" } ],
+                "status": "not_affected",
+                "justification": "vulnerable_code_not_in_execute_path"
+              }
+            ]
+          }
+          JSON
+
+          # Sign OpenVEX as attestation predicate
+          COSIGN_PASSWORD= cosign attest --yes --allow-insecure-registry --type openvex --predicate /tmp/att-openvex.json --key /tmp/cosign-good/cosign.key "$IMG"
+
+          # Good key must verify + apply
+          set +e
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --vex-attestation "$IMG" \
+            --key /tmp/cosign-good/cosign.pub \
+            --policy config/decision-policy.json \
+            --output /tmp/vex-att-ok-twin.json \
+            --trace "$CVE" \
+            --workload payment-api \
+            2>&1 | tee /tmp/vex-att-ok.out
+          OK_CODE=${PIPESTATUS[0]}
+          set -e
+          grep -E 'Applied OpenVEX attestation' /tmp/vex-att-ok.out | grep -E '[1-9][0-9]* statement' 
+          OK_DECISION=$(grep -E '^DECISION ' /tmp/vex-att-ok.out | awk '{print $2}')
+          test "$OK_DECISION" = "ALLOW" || { echo "ERROR: verified attestation should ALLOW, got ${OK_DECISION:-empty}"; cat /tmp/vex-att-ok.out; exit 1; }
+          test "$OK_CODE" -eq 0
+
+          # Wrong key must be rejected (fail closed — no apply)
+          set +e
+          ./bin/blastguard ingest \
+            --sbom-cyclonedx /tmp/nginx-sbom.json \
+            --vulns-grype /tmp/nginx-vulns.json \
+            --from-cluster \
+            --vex-attestation "$IMG" \
+            --key /tmp/cosign-bad/cosign.pub \
+            --policy config/decision-policy.json \
+            --output /tmp/vex-att-bad-twin.json \
+            --trace "$CVE" \
+            --workload payment-api \
+            2>&1 | tee /tmp/vex-att-bad.out
+          BAD_CODE=${PIPESTATUS[0]}
+          set -e
+          test "$BAD_CODE" -ne 0 || { echo "ERROR: wrong key must fail closed"; cat /tmp/vex-att-bad.out; exit 1; }
+          grep -qi 'verify failed\|trust material\|UNVERIFIED\|no matching' /tmp/vex-att-bad.out || \
+            { echo "ERROR: expected verify failure message"; cat /tmp/vex-att-bad.out; exit 1; }
+          echo "✓ OpenVEX attestation: good key applies, wrong key rejected"
 

@@ -180,14 +180,31 @@ func extractDigest(s string) string {
 			break
 		}
 	}
-	// sha256: + 64 hex
-	if len(dig) >= 7+64 {
-		return dig[:7+64]
+	// Require exactly "sha256:" + 64 hex digits. Short/prefix digests are rejected.
+	const want = 7 + 64
+	if len(dig) < want {
+		return ""
 	}
-	if len(dig) > 7 {
-		return dig
+	hexPart := dig[7:want]
+	for _, r := range hexPart {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return ""
+		}
 	}
-	return ""
+	// Reject if more hex follows without a separator (ambiguous longer token).
+	if len(dig) > want {
+		next := dig[want]
+		if (next >= '0' && next <= '9') || (next >= 'a' && next <= 'f') {
+			return ""
+		}
+	}
+	return dig[:want]
+}
+
+// ValidDigest reports whether d is exactly sha256:<64 lowercase/any-case hex>.
+func ValidDigest(d string) bool {
+	d = strings.ToLower(strings.TrimSpace(d))
+	return extractDigest(d) == d && len(d) == 7+64
 }
 
 func queryParam(raw, key string) string {

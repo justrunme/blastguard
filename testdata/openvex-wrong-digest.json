@@ -8,7 +8,7 @@
     {
       "vulnerability": { "name": "CVE-2024-6119" },
       "products": [
-        { "@id": "pkg:oci/alpine@sha256:0000000000000000000000000000000000000000000000000000000000000001" }
+        { "@id": "pkg:oci/alpine@sha256:bf8527" }
       ],
       "status": "not_affected",
       "justification": "vulnerable_code_not_in_execute_path"

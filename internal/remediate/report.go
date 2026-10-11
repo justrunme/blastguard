@@ -9,15 +9,26 @@ import (
 	"github.com/justrunme/blastguard/internal/graph"
 )
 
+// Verdict for whether a proposed image is safer.
+const (
+	SaferYes     = "safer"
+	SaferNo      = "not_safer"
+	SaferUnknown = "UNKNOWN"
+)
+
 // Report is the remediation impact output (JSON + markdown).
 type Report struct {
 	CurrentImage       string          `json:"current_image,omitempty"`
 	ProposedImage      string          `json:"proposed_image"`
+	SaferVerdict       string          `json:"safer_verdict"`
 	SaferWorkloads     []WorkloadDelta `json:"safer_workloads"`
 	UnchangedWorkloads []WorkloadDelta `json:"unchanged_workloads"`
+	WorsenedWorkloads  []WorkloadDelta `json:"worsened_workloads,omitempty"`
 	ResolvedCVEs       []string        `json:"resolved_cves"`
+	IntroducedCVEs     []string        `json:"introduced_cves,omitempty"`
 	RemainingCVEs      []CVERemain     `json:"remaining_cves"`
 	RequiredChanges    []string        `json:"required_changes"`
+	ScanDataMissing    bool            `json:"scan_data_missing,omitempty"`
 }
 
 // WorkloadDelta describes how a live workload's CVE set changes.
@@ -28,6 +39,7 @@ type WorkloadDelta struct {
 	Before    []string `json:"cves_before"`
 	After     []string `json:"cves_after"`
 	Resolved  []string `json:"resolved"`
+	Introduced []string `json:"introduced,omitempty"`
 }
 
 // CVERemain is a CVE still present on the proposed image.
@@ -39,6 +51,10 @@ type CVERemain struct {
 
 // Compare builds an impact report for moving live workloads from their current
 // images toward proposed (when ImagesMatch), using twin CVE/package data.
+//
+// A workload is "safer" only when at least one CVE is resolved and no new or
+// worse CVEs are introduced. A proposed image with no scan/package data yields
+// safer_verdict=UNKNOWN (never "all resolved").
 func Compare(t *graph.Twin, proposedImage string) (*Report, error) {
 	if t == nil {
 		return nil, fmt.Errorf("remediate: nil twin")
@@ -52,7 +68,16 @@ func Compare(t *graph.Twin, proposedImage string) (*Report, error) {
 		return nil, fmt.Errorf("remediate: proposed image %q not in twin (ingest its SBOM first)", proposedImage)
 	}
 
-	rep := &Report{ProposedImage: proposed.Image}
+	rep := &Report{ProposedImage: proposed.Image, SaferVerdict: SaferUnknown}
+
+	proposedHasScan := len(proposed.Packages) > 0 || artifactHasMatches(t, proposed)
+	if !proposedHasScan {
+		rep.ScanDataMissing = true
+		rep.SaferVerdict = SaferUnknown
+		rep.RequiredChanges = append(rep.RequiredChanges,
+			"Proposed image has no scan/package data — cannot claim CVEs are resolved (verdict UNKNOWN)")
+		return rep, nil
+	}
 
 	proposedCVEs := cvesForArtifact(t, proposed)
 	proposedSet := toSet(proposedCVEs)
@@ -62,8 +87,6 @@ func Compare(t *graph.Twin, proposedImage string) (*Report, error) {
 			continue
 		}
 		if !graph.ImagesMatch(w.Image, proposed.Image) && w.Image != proposed.Image {
-			// Only report workloads that could adopt this image family, or exact match family.
-			// If proposed is a different app image, still compare when current artifact shares repo.
 			cur := t.Artifact(w.Image)
 			if cur == nil || !graph.ImagesMatch(cur.Image, proposed.Image) {
 				continue
@@ -79,15 +102,21 @@ func Compare(t *graph.Twin, proposedImage string) (*Report, error) {
 		before := cvesForArtifact(t, curArt)
 		after := proposedCVEs
 		resolved := diff(before, proposedSet)
+		beforeSet := toSet(before)
+		introduced := diff(after, beforeSet)
 		delta := WorkloadDelta{
-			Name:      w.Name,
-			Namespace: w.Namespace,
-			Image:     w.Image,
-			Before:    before,
-			After:     after,
-			Resolved:  resolved,
+			Name:       w.Name,
+			Namespace:  w.Namespace,
+			Image:      w.Image,
+			Before:     before,
+			After:      after,
+			Resolved:   resolved,
+			Introduced: introduced,
 		}
-		if len(resolved) > 0 {
+		if len(introduced) > 0 {
+			rep.WorsenedWorkloads = append(rep.WorsenedWorkloads, delta)
+			rep.IntroducedCVEs = union(rep.IntroducedCVEs, introduced)
+		} else if len(resolved) > 0 {
 			rep.SaferWorkloads = append(rep.SaferWorkloads, delta)
 		} else {
 			rep.UnchangedWorkloads = append(rep.UnchangedWorkloads, delta)
@@ -101,6 +130,11 @@ func Compare(t *graph.Twin, proposedImage string) (*Report, error) {
 		}
 	}
 	for _, w := range rep.UnchangedWorkloads {
+		for _, c := range w.Before {
+			allBefore[c] = true
+		}
+	}
+	for _, w := range rep.WorsenedWorkloads {
 		for _, c := range w.Before {
 			allBefore[c] = true
 		}
@@ -120,6 +154,15 @@ func Compare(t *graph.Twin, proposedImage string) (*Report, error) {
 		})
 	}
 
+	switch {
+	case len(rep.WorsenedWorkloads) > 0 || len(rep.IntroducedCVEs) > 0:
+		rep.SaferVerdict = SaferNo
+	case len(rep.SaferWorkloads) > 0:
+		rep.SaferVerdict = SaferYes
+	default:
+		rep.SaferVerdict = SaferUnknown
+	}
+
 	if len(rep.SaferWorkloads) > 0 {
 		var names []string
 		for _, w := range rep.SaferWorkloads {
@@ -128,14 +171,35 @@ func Compare(t *graph.Twin, proposedImage string) (*Report, error) {
 		rep.RequiredChanges = append(rep.RequiredChanges,
 			fmt.Sprintf("Roll workloads to %s: %s", proposed.Image, strings.Join(names, ", ")))
 	}
+	if len(rep.IntroducedCVEs) > 0 {
+		rep.RequiredChanges = append(rep.RequiredChanges,
+			fmt.Sprintf("Proposed image introduces CVE(s): %s — not safer", strings.Join(rep.IntroducedCVEs, ", ")))
+	}
 	if len(rep.RemainingCVEs) > 0 {
 		rep.RequiredChanges = append(rep.RequiredChanges,
 			fmt.Sprintf("%d CVE(s) remain on proposed image — plan further upgrades or VEX", len(rep.RemainingCVEs)))
 	}
-	if len(rep.SaferWorkloads) == 0 && len(rep.RemainingCVEs) == 0 {
+	if len(rep.SaferWorkloads) == 0 && len(rep.WorsenedWorkloads) == 0 && len(rep.RemainingCVEs) == 0 {
 		rep.RequiredChanges = append(rep.RequiredChanges, "No running workloads match proposed image family; attach SBOM for current fleet images")
 	}
 	return rep, nil
+}
+
+func artifactHasMatches(t *graph.Twin, a *graph.Artifact) bool {
+	if a == nil {
+		return false
+	}
+	// Packages on the artifact are the primary scan signal.
+	if len(a.Packages) > 0 {
+		return true
+	}
+	// Exact-image scanner matches only (not ImagesMatch across tags).
+	for _, m := range t.Matches {
+		if m.Image != "" && m.Image == a.Image {
+			return true
+		}
+	}
+	return false
 }
 
 func cvesForArtifact(t *graph.Twin, a *graph.Artifact) []string {
@@ -171,6 +235,18 @@ func diff(before []string, afterSet map[string]bool) []string {
 	return out
 }
 
+func union(a, b []string) []string {
+	seen := toSet(a)
+	out := append([]string{}, a...)
+	for _, id := range b {
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 // Markdown renders a human-readable impact report.
 func (r *Report) Markdown() string {
 	var b strings.Builder
@@ -178,7 +254,12 @@ func (r *Report) Markdown() string {
 	if r.CurrentImage != "" {
 		fmt.Fprintf(&b, "- Current image family: `%s`\n", r.CurrentImage)
 	}
-	fmt.Fprintf(&b, "- Proposed image: `%s`\n\n", r.ProposedImage)
+	fmt.Fprintf(&b, "- Proposed image: `%s`\n", r.ProposedImage)
+	fmt.Fprintf(&b, "- Safer verdict: `%s`\n\n", r.SaferVerdict)
+
+	if r.ScanDataMissing {
+		b.WriteString("Proposed image has **no scan data** — verdict is UNKNOWN, not \"all resolved\".\n\n")
+	}
 
 	b.WriteString("## Safer workloads\n\n")
 	if len(r.SaferWorkloads) == 0 {
@@ -187,6 +268,15 @@ func (r *Report) Markdown() string {
 		for _, w := range r.SaferWorkloads {
 			fmt.Fprintf(&b, "- `%s/%s` (%s): resolves %s\n",
 				w.Namespace, w.Name, w.Image, strings.Join(w.Resolved, ", "))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(r.WorsenedWorkloads) > 0 {
+		b.WriteString("## Worsened workloads (new CVEs)\n\n")
+		for _, w := range r.WorsenedWorkloads {
+			fmt.Fprintf(&b, "- `%s/%s`: introduces %s\n",
+				w.Namespace, w.Name, strings.Join(w.Introduced, ", "))
 		}
 		b.WriteString("\n")
 	}
