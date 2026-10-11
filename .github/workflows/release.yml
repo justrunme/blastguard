@@ -65,22 +65,65 @@ jobs:
       
       - name: Scan release with Grype
         run: |
-          /tmp/grype dist/blastguard_*_linux_amd64.tar.gz -o json > /tmp/release-grype.json || true
+          set -euo pipefail
+          /tmp/grype dist/blastguard_*_linux_amd64.tar.gz -o json > /tmp/release-grype.json
       
       - name: Dogfood blastguard on its own release
         run: |
+          set -euo pipefail
           /tmp/blastguard ingest \
             --sbom-cyclonedx /tmp/release-sbom.json \
             --vulns-grype /tmp/release-grype.json \
             --output /tmp/release-twin.json
-          
+
           echo "## BlastGuard Self-Scan Report" > /tmp/dogfood-report.md
           echo "" >> /tmp/dogfood-report.md
           echo "This release was scanned with BlastGuard itself:" >> /tmp/dogfood-report.md
           echo "" >> /tmp/dogfood-report.md
           echo '```json' >> /tmp/dogfood-report.md
-          cat /tmp/release-twin.json | jq '{cves: (.cves | length), packages: (.artifacts[0].packages | length)}' >> /tmp/dogfood-report.md
+          jq '{cves: (.cves | length), packages: (.artifacts[0].packages | length), inventory_complete}' /tmp/release-twin.json >> /tmp/dogfood-report.md
           echo '```' >> /tmp/dogfood-report.md
+          echo "" >> /tmp/dogfood-report.md
+          echo "### Policy decisions" >> /tmp/dogfood-report.md
+
+          # Assert policy on every CVE: fail on BLOCK/QUARANTINE/UNKNOWN unless
+          # VEX (or no-blast-radius) yields ALLOW/WARN.
+          mapfile -t CVES < <(jq -r '.cves[].id // empty' /tmp/release-twin.json)
+          if [ "${#CVES[@]}" -eq 0 ]; then
+            echo "No CVEs in release twin — dogfood policy gate has nothing to assert" >> /tmp/dogfood-report.md
+          fi
+          for CVE in "${CVES[@]}"; do
+            [ -n "$CVE" ] || continue
+            set +e
+            /tmp/blastguard ingest \
+              --sbom-cyclonedx /tmp/release-sbom.json \
+              --vulns-grype /tmp/release-grype.json \
+              --policy config/decision-policy.json \
+              --trace "$CVE" \
+              --output json \
+              > /tmp/decision-"$CVE".json \
+              2>/tmp/decision-"$CVE".err
+            CODE=$?
+            set -e
+            ACTION=$(jq -r '.action // empty' /tmp/decision-"$CVE".json)
+            RULE=$(jq -r '.rule_id // empty' /tmp/decision-"$CVE".json)
+            echo "- \`$CVE\` → **$ACTION** (\`$RULE\`, exit=$CODE)" >> /tmp/dogfood-report.md
+            case "$ACTION" in
+              BLOCK|QUARANTINE|UNKNOWN)
+                echo "ERROR: dogfood policy gate rejected $CVE action=$ACTION rule=$RULE" >&2
+                cat /tmp/decision-"$CVE".json >&2 || true
+                cat /tmp/decision-"$CVE".err >&2 || true
+                exit 1
+                ;;
+              ALLOW|WARN)
+                ;;
+              *)
+                echo "ERROR: dogfood policy gate got unexpected action='$ACTION' for $CVE" >&2
+                cat /tmp/decision-"$CVE".json >&2 || true
+                exit 1
+                ;;
+            esac
+          done
       
       - name: Upload dogfood report
         uses: actions/upload-artifact@v7

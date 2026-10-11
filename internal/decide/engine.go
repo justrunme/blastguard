@@ -64,6 +64,11 @@ type Signals struct {
 	Provenance      string   `json:"provenance"`
 	FixImage        string   `json:"fix_image,omitempty"`
 
+	// InventoryComplete mirrors twin.inventory_complete. ALLOW via
+	// no-blast-radius requires an explicit complete inventory; empty or
+	// incomplete twins yield UNKNOWN (fail closed).
+	InventoryComplete bool `json:"inventory_complete"`
+
 	// Reachability triad — TRUE|FALSE|UNKNOWN. Missing evidence is UNKNOWN.
 	// ExecutionObserved never yields ALLOW by itself; observed != exploitable.
 	PackagePresent    string `json:"package_present"`
@@ -131,6 +136,15 @@ func (p *Policy) Evaluate(s Signals) Decision {
 
 	if s.AffectedArts == 0 && s.RunningWLs == 0 && !s.VEXNotAffected && !underInvest {
 		if s.CVE != "" && s.Package != "" {
+			if !s.InventoryComplete {
+				d := Decision{
+					Action:  "UNKNOWN",
+					RuleID:  "incomplete-inventory",
+					Reason:  "twin inventory empty or incomplete; cannot prove package absence",
+					Signals: s,
+				}
+				return applyTriad(d, execFalse, execTrue, netTrue)
+			}
 			d := Decision{Action: "ALLOW", RuleID: "no-blast-radius", Reason: "no affected artifacts remain in the twin", Signals: s}
 			return applyTriad(d, execFalse, execTrue, netTrue)
 		}
@@ -228,6 +242,7 @@ func TraceCVEWorkloadOpts(t *graph.Twin, cveID, workload string, opts TraceOptio
 		FixAvailable:      cve.FixAvailable,
 		SBOM:              graph.StatusMissing,
 		Provenance:        graph.StatusMissing,
+		InventoryComplete: t.InventoryComplete,
 		PackagePresent:    runtime.Unknown,
 		NetworkReachable:  runtime.Unknown,
 		ExecutionObserved: runtime.ExecutionObserved(opts.RuntimeEvidence, workload, cve.Package),
@@ -482,7 +497,8 @@ func artifactRelevantForStatus(t *graph.Twin, a *graph.Artifact, cve *graph.CVE,
 }
 
 // ExitCode maps a decision to process exit status.
-// 0 = ALLOW (and WARN unless failOnWarn), 1 = WARN when failOnWarn, 2 = BLOCK/QUARANTINE.
+// 0 = ALLOW (and WARN unless failOnWarn), 1 = WARN when failOnWarn or UNKNOWN,
+// 2 = BLOCK/QUARANTINE.
 func ExitCode(action string, failOnWarn bool) int {
 	switch strings.ToUpper(strings.TrimSpace(action)) {
 	case "ALLOW":
@@ -492,9 +508,23 @@ func ExitCode(action string, failOnWarn bool) int {
 			return 1
 		}
 		return 0
+	case "UNKNOWN":
+		return 1
 	case "BLOCK", "QUARANTINE":
 		return 2
 	default:
 		return 2
+	}
+}
+
+// DogfoodGateReject reports whether a release self-scan decision must fail the
+// build. BLOCK/QUARANTINE fail the gate; VEX-covered findings decide ALLOW and
+// pass. UNKNOWN (incomplete inventory) also fails closed.
+func DogfoodGateReject(d Decision) bool {
+	switch strings.ToUpper(strings.TrimSpace(d.Action)) {
+	case "BLOCK", "QUARANTINE", "UNKNOWN":
+		return true
+	default:
+		return false
 	}
 }

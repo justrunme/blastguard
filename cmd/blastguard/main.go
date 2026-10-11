@@ -115,7 +115,7 @@ Usage:
 
 Exit codes (decision commands / ingest --trace):
   0  ALLOW (WARN also exits 0 unless --fail-on warn)
-  1  WARN when --fail-on warn
+  1  WARN when --fail-on warn; UNKNOWN (incomplete inventory)
   2  BLOCK or QUARANTINE
 
 Commands:

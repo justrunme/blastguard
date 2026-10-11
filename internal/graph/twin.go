@@ -77,6 +77,10 @@ type Twin struct {
 	Workloads []Workload `json:"workloads"`
 	VEX       []VEX      `json:"vex"`
 	Matches   []Match    `json:"matches,omitempty"`
+	// InventoryComplete is true only when every running workload has an
+	// SBOM-backed artifact (package inventory present). Empty twins and
+	// twins with stub/MISSING SBOM images stay false (fail closed).
+	InventoryComplete bool `json:"inventory_complete"`
 }
 
 func Load(path string) (*Twin, error) {
@@ -236,6 +240,77 @@ func (t *Twin) BindWorkloads(workloads []Workload) {
 		})
 		seen[w.Image] = true
 	}
+	t.RefreshInventoryComplete()
+}
+
+// RefreshInventoryComplete sets InventoryComplete when package SBOMs exist for
+// every running workload (or, with no running workloads, when at least one
+// artifact carries package inventory). Empty / stub-only twins stay incomplete.
+func (t *Twin) RefreshInventoryComplete() {
+	if t == nil {
+		return
+	}
+	t.InventoryComplete = InventoryIsComplete(t)
+}
+
+// InventoryIsComplete reports whether the twin has enough SBOM coverage to
+// treat "package absent / no blast radius" as an ALLOW rather than UNKNOWN.
+func InventoryIsComplete(t *Twin) bool {
+	if t == nil || len(t.Artifacts) == 0 {
+		return false
+	}
+	hasPkgInventory := false
+	for i := range t.Artifacts {
+		if len(t.Artifacts[i].Packages) > 0 {
+			hasPkgInventory = true
+			break
+		}
+	}
+	if !hasPkgInventory {
+		return false
+	}
+	for _, w := range t.Workloads {
+		if !w.Running {
+			continue
+		}
+		a := ArtifactForWorkload(t, w)
+		if a == nil || len(a.Packages) == 0 || NormalizeStatus(a.SBOM) == StatusMissing {
+			return false
+		}
+	}
+	return true
+}
+
+// ArtifactForWorkload resolves the SBOM-backed artifact for a workload by
+// digest first, then exact image, then repository-name match with packages.
+func ArtifactForWorkload(t *Twin, w Workload) *Artifact {
+	if t == nil {
+		return nil
+	}
+	if w.ImageID != "" {
+		if a := t.ArtifactByDigest(w.ImageID); a != nil {
+			return a
+		}
+	}
+	for i := range t.Artifacts {
+		if t.Artifacts[i].Image == w.Image {
+			return &t.Artifacts[i]
+		}
+	}
+	var fallback *Artifact
+	for i := range t.Artifacts {
+		a := &t.Artifacts[i]
+		if !ImagesMatch(a.Image, w.Image) {
+			continue
+		}
+		if len(a.Packages) > 0 {
+			return a
+		}
+		if fallback == nil {
+			fallback = a
+		}
+	}
+	return fallback
 }
 
 func hasExactImage(t *Twin, image string) bool {

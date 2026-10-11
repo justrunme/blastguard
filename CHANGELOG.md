@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+- Empty/incomplete twin inventory no longer ALLOW via `no-blast-radius` (UNKNOWN / `incomplete-inventory`, fail closed)
+- Release dogfood: Grype scan is fail-closed; policy decision JSON is asserted (reject BLOCK/QUARANTINE/UNKNOWN)
+
 ## [0.2.0] - 2026-10-11
 
 OpenVEX, reachability triad, and remediate since 0.1.0:
