@@ -8,11 +8,11 @@ import (
 
 // Demo holds fixture-oriented defaults kept out of core decision logic.
 type Demo struct {
-	DefaultWorkload     string            `json:"default_workload"`
-	FixImageCandidates  []string          `json:"fix_image_candidates"`
-	Remediation         DemoRemediation   `json:"remediation"`
-	CriticalLabel       string            `json:"critical_label"`
-	CriticalAnnotations []string          `json:"critical_annotations"`
+	DefaultWorkload     string          `json:"default_workload"`
+	FixImageCandidates  []string        `json:"fix_image_candidates"`
+	Remediation         DemoRemediation `json:"remediation"`
+	CriticalLabel       string          `json:"critical_label"`
+	CriticalAnnotations []string        `json:"critical_annotations"`
 }
 
 type DemoRemediation struct {

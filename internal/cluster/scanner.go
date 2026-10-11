@@ -121,7 +121,7 @@ func (s *Scanner) ScanCluster(ctx context.Context) ([]graph.Workload, error) {
 		workloads = append(workloads, s.workloadsFromPodTemplate(
 			ds.Name, ds.Namespace, ds.Labels,
 			ds.Spec.Template.Labels, ds.Spec.Template.Spec,
-			int32(ds.Status.DesiredNumberScheduled), int(ds.Status.NumberReady),
+			ds.Status.DesiredNumberScheduled, int(ds.Status.NumberReady),
 			services.Items, exposed, npByNS[ds.Namespace],
 		)...)
 	}

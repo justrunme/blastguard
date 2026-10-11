@@ -71,8 +71,8 @@ type Decision struct {
 
 // TraceOptions controls optional attestation verification and fix lookup.
 type TraceOptions struct {
-	Verifier   verify.Verifier
-	Demo       *config.Demo
+	Verifier           verify.Verifier
+	Demo               *config.Demo
 	VerifyAttestations bool
 }
 
