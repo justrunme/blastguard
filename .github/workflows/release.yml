@@ -6,20 +6,26 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
-  packages: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
+    permissions:
+      # Create GitHub Release and upload release assets (GoReleaser, gh, SBOM).
+      contents: write
+      # Push container images to GHCR.
+      packages: write
+      # Keyless cosign signing and provenance attestation (OIDC).
+      id-token: write
+      # Publish build provenance attestations.
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
       
@@ -30,34 +36,46 @@ jobs:
       
       - name: Install syft
         run: |
-          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+          set -euo pipefail
+          SYFT_VERSION=1.55.0
+          SYFT_SHA256=bb65249542db5fedeeb4d3f9b018b75e7264dbfbbb10486f044581a92f90490d
+          curl -fsSL -o /tmp/syft.tgz \
+            "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  /tmp/syft.tgz" | sha256sum -c -
+          sudo tar -xzf /tmp/syft.tgz -C /usr/local/bin syft
       
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v4
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       
       - name: Login to GitHub Container Registry
-        uses: docker/login-action@v4
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
-          version: latest
+          version: v2.19.0
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
       - name: Install blastguard and grype
         run: |
+          set -euo pipefail
           tar -xzf dist/blastguard_*_linux_amd64.tar.gz -C /tmp
           chmod +x /tmp/blastguard
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /tmp
+          GRYPE_VERSION=0.121.0
+          GRYPE_SHA256=64e07133d3486115de647a66581461dccf5c732748a0a3119077395565f15519
+          curl -fsSL -o /tmp/grype.tgz \
+            "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
+          echo "${GRYPE_SHA256}  /tmp/grype.tgz" | sha256sum -c -
+          tar -xzf /tmp/grype.tgz -C /tmp grype
       
       - name: Generate SBOM for release
         run: |
@@ -126,7 +144,7 @@ jobs:
           done
       
       - name: Upload dogfood report
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dogfood-report
           path: /tmp/dogfood-report.md
@@ -139,8 +157,13 @@ jobs:
 
       - name: Install crane
         run: |
-          curl -fsSL https://github.com/google/go-containerregistry/releases/download/v0.20.6/go-containerregistry_Linux_x86_64.tar.gz \
-            | sudo tar -xz -C /usr/local/bin crane
+          set -euo pipefail
+          CRANE_VERSION=v0.20.6
+          CRANE_SHA256=c1d593d01551f2c9a3df5ca0a0be4385a839bd9b86d4a76e18d7b17d16559127
+          curl -fsSL -o /tmp/gcr.tgz \
+            "https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "${CRANE_SHA256}  /tmp/gcr.tgz" | sha256sum -c -
+          sudo tar -xz -C /usr/local/bin -f /tmp/gcr.tgz crane
 
       - name: Generate SPDX SBOM for image
         uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
