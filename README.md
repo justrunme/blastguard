@@ -250,6 +250,11 @@ Measured from CI (not estimates). Details: [docs/results.md](docs/results.md) ·
 | Kind e2e `CVE-2026-93990` | `internal-worker` | **WARN** | same run (`e2e-kind`) |
 | Remediation prove | after fix | **ALLOW** / REMEDIATION PROVED | same run (`ci`) |
 
-\n## License
+## Author
+
+Andrey Lesnikov — Senior DevOps & AI Platform Engineer  
+[https://orcid.org/0009-0004-7583-4314](https://orcid.org/0009-0004-7583-4314)
+
+## License
 
 Apache-2.0 © Andrey Lesnikov
