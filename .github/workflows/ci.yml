@@ -290,15 +290,13 @@ jobs:
           echo "${COSIGN_SHA256}  /tmp/cosign" | sha256sum -c -
           chmod +x /tmp/cosign
           sudo mv /tmp/cosign /usr/local/bin/cosign
-          # Allow HTTP registry on localhost:5001
-          sudo mkdir -p /etc/docker
-          if [ -f /etc/docker/daemon.json ]; then
-            sudo jq '. + {"insecure-registries": ((.["insecure-registries"] // []) + ["localhost:5001"] | unique)}' /etc/docker/daemon.json > /tmp/daemon.json
-            sudo mv /tmp/daemon.json /etc/docker/daemon.json
-          else
-            echo '{"insecure-registries":["localhost:5001"]}' | sudo tee /etc/docker/daemon.json
-          fi
-          sudo systemctl restart docker || sudo service docker restart || true
+          # Do not rewrite daemon.json / restart Docker here: a mid-job daemon
+          # restart stops the kind control-plane, and blastguard --from-cluster
+          # can hit a transient RBAC window
+          # (User "kubernetes-admin" cannot list services) before bindings
+          # reload. Docker Engine 28+/29 push to localhost:5001 over HTTP
+          # without insecure-registries; cosign already uses
+          # --allow-insecure-registry for attest/verify.
           docker run -d --name bg-registry -p 5001:5000 registry:2
 
       - name: OpenVEX attestation verify (key) applies; wrong key rejected
