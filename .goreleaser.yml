@@ -116,6 +116,22 @@ docker_signs:
       - --yes
       - --registry-referrers-mode=legacy
 
+brews:
+  - repository:
+      owner: justrunme
+      name: homebrew-tools
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: https://github.com/justrunme/blastguard
+    description: "Predict CVE blast radius with SBOM, runtime reachability, and exposure tracing"
+    license: Apache-2.0
+    commit_author:
+      name: Andrey Lesnikov
+      email: 52860508+justrunme@users.noreply.github.com
+    skip_upload: auto
+    test: |
+      system "#{bin}/blastguard", "--version"
+
 release:
   github:
     owner: justrunme
