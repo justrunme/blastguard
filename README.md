@@ -27,6 +27,12 @@ Case study: [BlastGuard](https://justrunme.com/cases/blastguard/) · [Andrey Les
 - CVE dashboards count findings; operators need reachability and exposure to prioritize
 - Remediation should prove the critical path is closed, not only that a ticket was filed
 
+## Install
+
+```bash
+brew install justrunme/tools/blastguard
+```
+
 ## Quickstart
 
 ```bash
